@@ -1,25 +1,29 @@
-# FlowPilot
+# FlowPilot Portfolio Demo
 
-FlowPilot is a Google Apps Script workflow and knowledge-management project, presented as an interactive, browser-only portfolio demo.
+**[Open the live demo](https://vlabarile3-sys.github.io/FlowPilot-Portfolio/)**
 
-## Live demo
+FlowPilot is an interactive, browser-only portfolio demo of a workflow and knowledge-management application.
 
-**[Open FlowPilot](https://vlabarile3-sys.github.io/FlowPilot-Portfolio/)**
+## What to explore
 
-## Demo behavior
+- The original interface, UX, and CSS, rendered as a static web app.
+- Fictional sample guides, schedules, InfoCards, shortcuts, and announcements.
+- Local-only interactions: changes are kept in memory and reset on refresh.
+- No connection to Google Sheets, Gmail, Drive, or an Apps Script deployment.
 
-- Uses fictional sample records and runs locally in the browser.
-- Preserves the original FlowPilot interface, UX, and CSS.
-- Stores interactions in memory; refreshing resets changes.
-- Does not connect to Google Sheets, Gmail, Drive, or an Apps Script deployment.
+## Browse the project
 
-## Source modules
+- [`index.html`](./index.html) - deployable web demo.
+- [`demo-bridge.js`](./demo-bridge.js) - fictional records and local Apps Script mock.
+- [`build-demo.mjs`](./build-demo.mjs) - builds the demo from the source modules.
+- [`source/`](./source/) - browse the supplied modules directly on GitHub.
+- [`flowpilot-source.zip`](./flowpilot-source.zip) - download the supplied modules.
 
-The supplied anonymized Apps Script modules are available in [`flowpilot-source.zip`](./flowpilot-source.zip). The source includes backend automations; do not deploy those modules publicly or run them against personal or production accounts.
+The source includes backend automations for Google services. Do not deploy or run those modules against personal or production accounts without reviewing their permissions and behavior. GitHub Pages serves only the static browser demo; it does not execute the Apps Script backend.
 
-The demo page is `index.html`. `demo-bridge.js` simulates Apps Script calls in memory. `build-demo.mjs` regenerates the page from the modules in `source/`.
+## Run locally
 
-To rebuild locally, extract the archive into a `source/` directory, then run:
+Requires Node.js. From this folder:
 
 ```sh
 node build-demo.mjs

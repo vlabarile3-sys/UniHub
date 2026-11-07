@@ -91,5 +91,6 @@ html = html.replace(
   '<!-- Moduli JavaScript Architettura Enterprise -->\n<script src="./demo-bridge.js"></script>'
 );
 html = renderTemplate(html);
+html = html.replace(/\u00a0/g, ' ');
 writeFileSync(join(root, 'index.html'), html, 'utf8');
 console.log(`Built ${join(root, 'index.html')}`);

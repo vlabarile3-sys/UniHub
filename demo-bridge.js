@@ -1,16 +1,38 @@
 (() => {
   const now = Date.now();
   const at = (hoursAgo) => new Date(now - hoursAgo * 60 * 60 * 1000).toISOString();
+  const monthAt = (offset) => {
+    const date = new Date();
+    date.setDate(1);
+    date.setMonth(date.getMonth() + offset);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  };
   const workflows = ['DEMO', 'SUPPORT', 'ONBOARDING', 'OPERATIONS', 'INSIGHTS', 'AUTOMATION'];
   const tasks = ['Content Review', 'Knowledge Article Update', 'Weekly Insights', 'Team Onboarding'];
 
   let appData = {
     db: [
-      { id: 'demo-resource-1', title: 'Demo Playbook — Getting Started', url: 'https://example.com/demo/playbook', category: 'root', type: 'doc', tags: ['demo', 'guide'], isAgentVisible: true },
-      { id: 'demo-resource-2', title: 'Sample Workflow Metrics', url: 'https://example.com/demo/metrics', category: 'root', type: 'sheet', tags: ['demo', 'metrics'], isAgentVisible: true }
+      { id: 'demo-resource-1', title: 'Demo Playbook — Getting Started', url: 'https://example.com/demo/playbook', category: 'demo-guides', type: 'doc', tags: ['demo', 'guide'], isAgentVisible: true },
+      { id: 'demo-resource-2', title: 'Sample Workflow Metrics', url: 'https://example.com/demo/metrics', category: 'demo-reports', type: 'sheet', tags: ['demo', 'metrics'], isAgentVisible: true },
+      { id: 'demo-resource-3', title: 'Content Review Checklist', url: 'https://example.com/demo/review-checklist', category: 'demo-guides', type: 'doc', tags: ['demo', 'quality'], isAgentVisible: true },
+      { id: 'demo-resource-4', title: 'Release Readiness Notes', url: 'https://example.com/demo/release-readiness', category: 'demo-reports', type: 'doc', tags: ['demo', 'release'], isAgentVisible: true },
+      { id: 'demo-resource-5', title: 'Project Handoff Template', url: 'https://example.com/demo/handoff-template', category: 'demo-templates', type: 'doc', tags: ['demo', 'template'], isAgentVisible: false },
+      { id: 'demo-resource-6', title: 'Weekly Team Update', url: 'https://example.com/demo/team-update', category: 'demo-templates', type: 'sheet', tags: ['demo', 'update'], isAgentVisible: true }
     ],
-    pocs: [{ id: 1001, task: tasks[0], pocName: 'Alex Morgan', month: new Date().toISOString().slice(0, 7) }],
-    cats: [{ id: 'root', name: 'Shared Materials', parentId: null }],
+    pocs: [
+      { id: 1001, task: tasks[0], pocName: 'Alex Morgan', month: monthAt(0) },
+      { id: 1002, task: tasks[1], pocName: 'Sam Taylor', month: monthAt(0) },
+      { id: 1003, task: tasks[2], pocName: 'Jordan Lee', month: monthAt(1) },
+      { id: 1004, task: tasks[3], pocName: 'Alex Morgan', month: monthAt(1) },
+      { id: 1005, task: tasks[0], pocName: 'Sam Taylor', month: monthAt(2) },
+      { id: 1006, task: tasks[2], pocName: 'Jordan Lee', month: monthAt(2) }
+    ],
+    cats: [
+      { id: 'root', name: 'Shared Materials', parentId: null },
+      { id: 'demo-guides', name: 'Guides & Checklists', parentId: 'root' },
+      { id: 'demo-reports', name: 'Reports & Insights', parentId: 'root' },
+      { id: 'demo-templates', name: 'Team Templates', parentId: 'root' }
+    ],
     qas: ['Alex Morgan', 'Sam Taylor', 'Jordan Lee'],
     links: {},
     channels: ['General KB', 'Team Guides', 'Release Notes'],
@@ -30,6 +52,24 @@
       _history: []
     },
     {
+      date: at(5),
+      verdict: 'Approved',
+      user: 'What belongs in a release-readiness review?',
+      bot: 'Summarize scope, validation status, known risks, and the owner for each remaining action.',
+      description: 'Fictional sample showing a concise operational answer.',
+      channel: 'Release Notes',
+      _history: []
+    },
+    {
+      date: at(12),
+      verdict: 'Needs Review',
+      user: 'How should I document an unresolved issue?',
+      bot: 'Record its impact, current owner, investigation status, and the next update time.',
+      description: 'Fictional review item included to demonstrate status filtering.',
+      channel: 'General KB',
+      _history: []
+    },
+    {
       date: at(24),
       verdict: 'Needs Review',
       user: 'What should a useful handoff include?',
@@ -37,22 +77,36 @@
       description: 'Second fictional record used only for the demo.',
       channel: 'Team Guides',
       _history: []
+    },
+    {
+      date: at(48),
+      verdict: 'Approved',
+      user: 'When should a shared guide be updated?',
+      bot: 'Review it when a process changes, an owner changes, or feedback reveals a gap.',
+      description: 'Fictional sample for the knowledge-publishing workflow.',
+      channel: 'Team Guides',
+      _history: []
     }
   ];
 
-  let pins = [{
-    id: 'demo-pin-1',
-    title: 'Demo Playbook',
-    url: 'https://example.com/demo/playbook',
-    agentVisible: true,
-    addedBy: 'Demo Studio'
-  }];
+  let pins = [
+    { id: 'demo-pin-1', title: 'Demo Playbook', url: 'https://example.com/demo/playbook', agentVisible: true, addedBy: 'Demo Studio' },
+    { id: 'demo-pin-2', title: 'Workflow Metrics', url: 'https://example.com/demo/metrics', agentVisible: true, addedBy: 'Demo Studio' },
+    { id: 'demo-pin-3', title: 'Review Checklist', url: 'https://example.com/demo/review-checklist', agentVisible: true, addedBy: 'Demo Studio' }
+  ];
   let broadcasts = [{
     id: 'demo-broadcast-1',
     author: 'Demo Studio',
     target: 'ALL',
     scheduled: new Date(now - 60 * 60 * 1000).toISOString(),
     payload: 'Welcome to the fictional FlowPilot demo. Explore the sample workflows and shared guides.',
+    priority: 'NORMAL'
+  }, {
+    id: 'demo-broadcast-2',
+    author: 'Demo Studio',
+    target: 'DEMO',
+    scheduled: new Date(now - 24 * 60 * 60 * 1000).toISOString(),
+    payload: 'Sample reminder: review the release checklist before sharing an update.',
     priority: 'NORMAL'
   }];
   const canvasStates = {};

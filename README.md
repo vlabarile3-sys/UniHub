@@ -1,6 +1,6 @@
 # UniHub Portfolio Demo
 
-**[Open the live demo](https://vlabarile3-sys.github.io/FlowPilot-Portfolio/)**
+**[Open the live demo](https://vlabarile3-sys.github.io/UniHub/)**
 
 UniHub is an interactive, browser-only portfolio demo of a workflow and knowledge-management application.
 

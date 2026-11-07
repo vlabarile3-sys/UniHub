@@ -1,0 +1,310 @@
+<script>
+/**
+* =========================================
+* FLOWPILOT CLIENT-SIDE ENGINE (V8 FRONTEND)
+* Module: Schedule (Multi-POC, Task Matrix, Auto-Assign)
+* Pipeline: 1:N Workflow Relational Scheduling & UX Polishing
+* =========================================
+*/
+
+// --- 1. SCHEDULE NAVIGATION & RENDER ---
+function renderScheduleWorkflowDropdown() {
+// 1. Workflow Dropdown Injection
+let wfSelect = document.getElementById('scheduleWorkflowFilter');
+if (!wfSelect) {
+const topBar = document.querySelector('#view-schedule .top-bar .d-flex.align-items-center.gap-3');
+if (topBar) {
+wfSelect = document.createElement('select');
+wfSelect.id = 'scheduleWorkflowFilter';
+wfSelect.className = 'form-select glass-input m-0 rounded-pill';
+wfSelect.style.cssText = 'min-width: 150px; width:auto; padding: 10px 16px; font-weight: 700; color: var(--primary); cursor: pointer; height: 44px; margin-left: 15px !important;';
+wfSelect.onchange = function() {
+updateActiveWorkflowData(this.value);
+updateTaskSelectDropdown();
+renderPOCs();
+};
+topBar.appendChild(wfSelect);
+}
+}
+
+if (wfSelect) {
+const currentVal = wfSelect.value || state.activeWorkflow;
+wfSelect.innerHTML = targetWorkflows.map(w => `<option value="${escapeHTML(w)}">🛡️ ${escapeHTML(w)}</option>`).join('');
+if(targetWorkflows.includes(currentVal)) wfSelect.value = currentVal;
+}
+
+// 2. Clear Button Injection
+const scheduleHeader = document.querySelector('#view-schedule .d-flex.justify-content-between.align-items-center.mb-3');
+if (scheduleHeader && !document.getElementById('btnClearSchedule')) {
+const autoAssignBtn = scheduleHeader.querySelector('.btn-auto-assign');
+if (autoAssignBtn) {
+const btnWrapper = document.createElement('div');
+btnWrapper.className = 'd-flex gap-2 align-items-center';
+const clearBtn = document.createElement('button');
+clearBtn.id = 'btnClearSchedule';
+clearBtn.className = 'btn-auto-assign';
+clearBtn.style.cssText = 'color: var(--danger); border-color: rgba(var(--danger-rgb), 0.3); background: rgba(var(--danger-rgb), 0.05); transition: all 0.3s;';
+clearBtn.onmouseover = function() { this.style.background = 'var(--danger)'; this.style.color = '#fff'; };
+clearBtn.onmouseout = function() { this.style.background = 'rgba(var(--danger-rgb), 0.05)'; this.style.color = 'var(--danger)'; };
+clearBtn.innerHTML = '<i class="material-icons">delete_sweep</i> <span>Clear</span>';
+clearBtn.onclick = clearSchedule;
+scheduleHeader.insertBefore(btnWrapper, autoAssignBtn);
+btnWrapper.appendChild(clearBtn);
+btnWrapper.appendChild(autoAssignBtn);
+}
+}
+}
+
+function updateTaskSelectDropdown() {
+const taskSelect = document.getElementById('pocTask');
+if(!taskSelect) return;
+taskSelect.innerHTML = '';
+appTasks.forEach(t => taskSelect.add(new Option(t, t)));
+}
+
+function updateScheduleMonthDisplay() {
+const display = document.getElementById('currentScheduleMonthDisplay');
+if(!display) return;
+const opts = { month: 'long', year: 'numeric' };
+const d1 = new Date(currentScheduleDate);
+const d3 = new Date(currentScheduleDate);
+d3.setMonth(d3.getMonth() + 2);
+display.innerText = `${d1.toLocaleDateString('en-US', opts).toUpperCase()} - ${d3.toLocaleDateString('en-US', opts).toUpperCase()}`;
+}
+
+function changeScheduleMonth(offset) {
+currentScheduleDate.setMonth(currentScheduleDate.getMonth() + (offset * 3));
+state.specificRowId = null;
+updateScheduleMonthDisplay();
+renderPOCs();
+}
+
+function getScheduleMonthString(dateObj) {
+return `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function renderPOCs() {
+renderScheduleWorkflowDropdown();
+const grid = document.getElementById('pocGrid');
+if(!grid) return;
+
+const activeWfName = state.activeWorkflow;
+
+if (appTasks.length === 0) {
+grid.innerHTML = `<div class="text-center text-muted p-5 mt-4"><i class="material-icons mb-3" style="font-size: 48px; opacity: 0.5;">calendar_view_day</i><h4 class="fw-bold">No Tasks for ${escapeHTML(activeWfName)}</h4><p>Click "Settings > Tasks" to build your operational schedule.</p></div>`;
+return;
+}
+const dates = [
+new Date(currentScheduleDate.getFullYear(), currentScheduleDate.getMonth(), 1),
+new Date(currentScheduleDate.getFullYear(), currentScheduleDate.getMonth() + 1, 1),
+new Date(currentScheduleDate.getFullYear(), currentScheduleDate.getMonth() + 2, 1)
+];
+const monthStrings = dates.map(d => getScheduleMonthString(d));
+const monthHeaders = dates.map(d => d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }).toUpperCase());
+// Contenitore compatto e centrato (.schedule-table-wrapper)
+let html = `<div class="schedule-table-wrapper table-responsive border" style="border-color: var(--border-glass) !important; background: var(--bg-base); box-shadow: var(--shadow-sm);">`;
+html += `<table class="schedule-table m-0" style="table-layout: fixed; width: 100%; border-collapse: collapse;">`;
+html += `<colgroup>
+<col style="width: 28%;">
+<col style="width: 24%;">
+<col style="width: 24%;">
+<col style="width: 24%;">
+</colgroup>`;
+html += `<thead style="background: var(--surface-glass); border-bottom: 2px solid var(--border-glass) !important;">
+<tr>
+<th class="p-3 text-uppercase text-muted" style="font-size: 0.75rem; letter-spacing: 1px; font-weight: 700;">Task / Role</th>
+<th class="p-3 text-uppercase text-muted" style="font-size: 0.75rem; letter-spacing: 1px; font-weight: 700;">${monthHeaders[0]}</th>
+<th class="p-3 text-uppercase text-muted" style="font-size: 0.75rem; letter-spacing: 1px; font-weight: 700;">${monthHeaders[1]}</th>
+<th class="p-3 text-uppercase text-muted" style="font-size: 0.75rem; letter-spacing: 1px; font-weight: 700;">${monthHeaders[2]}</th>
+</tr>
+</thead><tbody>`;
+appTasks.forEach(taskName => {
+const hasLink = taskLinksDatabase[taskName] ? '<i class="material-icons text-primary" style="font-size: 16px;">link</i>' : '';
+html += `<tr style="border-bottom: 1px solid var(--border-glass); transition: background 0.2s;" onmouseover="this.style.background='rgba(var(--primary-rgb), 0.02)'" onmouseout="this.style.background='transparent'">`;
+html += `<td class="p-3 align-middle border-end" style="border-color: var(--border-glass) !important;">
+<div class="task-name-cell fw-bold" style="color: var(--text-main); font-size: 0.9rem;" onclick="openTaskBubble(event, '${taskName.replace(/'/g, "\\'")}')">
+<i class="material-icons text-primary" style="font-size: 18px; opacity: 0.85;">assignment</i>
+<span>${escapeHTML(taskName)}</span> ${hasLink}
+</div>
+</td>`;
+monthStrings.forEach(mStr => {
+const assignments = pocDatabase.filter(p => p.task === taskName && p.month === mStr);
+html += `<td class="p-3 align-top border-end" style="border-color: var(--border-glass) !important; background: rgba(0,0,0,0.01);">
+<div class="d-flex flex-column gap-2 mx-auto" style="width: 100%; max-width: 280px; min-height: 40px;">`;
+if(assignments.length > 0) {
+assignments.forEach((assignment, idx) => {
+const initials = (assignment.pocName || 'QA').trim().split(/\s+/).map(n => n[0] || '').join('').substring(0,2).toUpperCase();
+const isPrimary = idx === 0;
+const bgClass = isPrimary ? 'rgba(var(--primary-rgb), 0.1)' : 'var(--input-bg)';
+const borderClass = isPrimary ? '1px solid rgba(var(--primary-rgb), 0.3)' : '1px solid var(--border-glass)';
+const avatarBg = isPrimary ? 'var(--primary)' : 'var(--text-muted)';
+const avatarText = isPrimary ? '#fff' : 'var(--bg-base)';
+const titleText = isPrimary ? 'Primary POC' : 'Backup POC';
+const starIcon = isPrimary ? `<i class="material-icons text-warning align-middle ms-1" style="font-size:14px; text-shadow: 0 0 5px rgba(251,191,36,0.5);" title="Primary">workspace_premium</i>` : '';
+
+html += `
+<div class="poc-pill d-flex align-items-center justify-content-between p-2 rounded-3 shadow-sm"
+onclick="openPocModal(${assignment.id})"
+style="background: ${bgClass}; border: ${borderClass}; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;"
+onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 12px rgba(0,0,0,0.1)'"
+onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='var(--shadow-sm)'">
+<div class="slot-info d-flex align-items-center gap-2 overflow-hidden">
+<div class="fw-bold" style="width:28px; height:28px; font-size:11px; display:flex; align-items:center; justify-content:center; border-radius:8px; flex-shrink:0; background:${avatarBg}; color:${avatarText};" title="${titleText}">${initials}</div>
+<div class="slot-name fw-bold text-truncate" style="font-size:0.85rem; color:var(--text-main); max-width:140px;">${escapeHTML(assignment.pocName)}${starIcon}</div>
+</div>
+<div class="btn-delete-hover" style="cursor:pointer; flex-shrink:0; opacity:0.6; color:var(--text-muted); transition:0.2s;"
+onmouseover="this.style.opacity='1'; this.style.color='var(--danger)'"
+onmouseout="this.style.opacity='0.6'; this.style.color='var(--text-muted)'"
+onclick="event.stopPropagation(); deletePoc(${assignment.id})">
+<i class="material-icons" style="font-size:18px;">close</i>
+</div>
+</div>
+`;
+});
+}
+html += `
+<div class="add-poc-btn mt-1 py-2 small cursor-pointer text-center d-flex align-items-center justify-content-center gap-1"
+onclick="openPocModal(null, '${taskName.replace(/'/g, "\\'")}', '${mStr}')">
+<i class="material-icons" style="font-size:16px;">add_circle_outline</i> <span style="font-size:0.75rem; letter-spacing:0.5px;">ASSIGN</span>
+</div>
+`;
+html += `</div></td>`;
+});
+html += `</tr>`;
+});
+html += `</tbody></table></div>`;
+grid.innerHTML = html;
+}
+
+// --- 2. POC ASSIGNMENT OPERATIONS (CRUD) ---
+function openPocModal(id = null, prefillTask = null, prefillMonth = null) {
+if(appTasks.length === 0) {
+showToast("Please add a task first!", "error");
+return;
+}
+document.getElementById('pocForm').reset();
+document.getElementById('pocId').value = '';
+document.getElementById('pocMonth').value = prefillMonth || getScheduleMonthString(new Date());
+if(id) {
+const poc = pocDatabase.find(p => p.id === id);
+if(poc) {
+document.getElementById('pocId').value = poc.id;
+document.getElementById('pocTask').value = poc.task;
+document.getElementById('pocName').value = poc.pocName;
+document.getElementById('pocMonth').value = poc.month;
+}
+} else if (prefillTask) {
+document.getElementById('pocTask').value = prefillTask;
+}
+pocModalObj.show();
+}
+
+function savePoc() {
+const id = document.getElementById('pocId').value,
+task = document.getElementById('pocTask').value,
+pocName = document.getElementById('pocName').value.trim(),
+month = document.getElementById('pocMonth').value;
+if(!task || !pocName || !month) return;
+const isDuplicate = pocDatabase.some(p => p.task === task && p.month === month && p.pocName.toLowerCase() === pocName.toLowerCase() && p.id != id);
+if(isDuplicate) {
+return showToast("This person is already assigned to this shift!", "error");
+}
+if(id) {
+const idx = pocDatabase.findIndex(p => p.id == id);
+if(idx > -1) pocDatabase[idx] = { id: parseInt(id), task, pocName, month };
+} else {
+pocDatabase.push({ id: Date.now(), task, pocName, month });
+}
+syncToGlobalState();
+pocModalObj.hide();
+if(document.activeElement) document.activeElement.blur();
+renderPOCs();
+showToast("Saved successfully!", "success");
+}
+
+function deletePoc(id) {
+if(confirm("Are you sure you want to delete this assignment?")) {
+pocDatabase = pocDatabase.filter(p => p.id !== id);
+syncToGlobalState();
+renderPOCs();
+showToast("Deleted successfully!", "success");
+}
+}
+
+function autoAssignTasks() {
+if(qaNamesList.length === 0) {
+showToast("Add POC names in settings first!", "error");
+return;
+}
+if(appTasks.length === 0 || !confirm(`Unassigned tasks for ${state.activeWorkflow} will be randomly distributed. Proceed?`)) return;
+const dates = [
+new Date(currentScheduleDate.getFullYear(), currentScheduleDate.getMonth(), 1),
+new Date(currentScheduleDate.getFullYear(), currentScheduleDate.getMonth() + 1, 1),
+new Date(currentScheduleDate.getFullYear(), currentScheduleDate.getMonth() + 2, 1)
+];
+const monthStrings = dates.map(d => getScheduleMonthString(d));
+let assignedCount = 0;
+let timeBase = Date.now();
+appTasks.forEach(taskName => {
+monthStrings.forEach(mStr => {
+if(!pocDatabase.find(p => p.task === taskName && p.month === mStr)) {
+pocDatabase.push({ id: timeBase++, task: taskName, pocName: qaNamesList[Math.floor(Math.random() * qaNamesList.length)], month: mStr });
+assignedCount++;
+}
+});
+});
+if(assignedCount > 0) {
+syncToGlobalState();
+renderPOCs();
+showToast(`Successfully assigned ${assignedCount} tasks in ${state.activeWorkflow}!`, "success");
+} else {
+showToast("All tasks are already assigned.", "info");
+}
+}
+
+function clearSchedule() {
+if(appTasks.length === 0) return;
+const activeWfName = state.activeWorkflow;
+if(!confirm(`Are you sure you want to CLEAR ALL assigned tasks for ${escapeHTML(activeWfName)}?\nThis cannot be undone.`)) return;
+
+pocDatabase = pocDatabase.filter(p => !appTasks.includes(p.task));
+syncToGlobalState();
+renderPOCs();
+showToast(`Schedule cleared for ${activeWfName}.`, "success");
+}
+
+// --- 3. TASK LINK BUBBLE ---
+function openTaskBubble(event, taskName) {
+event.stopPropagation();
+const bubble = document.getElementById('taskBubble');
+const currentLink = taskLinksDatabase[taskName] || '';
+bubble.innerHTML = `
+<div class="task-bubble-header">
+<span class="task-bubble-title">${escapeHTML(taskName)}</span>
+<button class="btn btn-sm btn-icon border-0 p-0 shadow-none text-muted" onclick="document.getElementById('taskBubble').classList.remove('visible')">
+<i class="material-icons">close</i>
+</button>
+</div>
+${currentLink ? `<a href="${currentLink}" target="_blank" class="task-bubble-link"><i class="material-icons" style="font-size:16px;">open_in_new</i> Open Link</a>` : ''}
+<input type="url" id="bubbleLinkInput" class="form-control form-control-sm mb-2" placeholder="https://..." value="${currentLink}">
+<button class="btn btn-primary w-100 rounded-pill fw-bold" onclick="saveTaskLink('${taskName.replace(/'/g, "\\'")}')">Save</button>
+`;
+const rect = event.currentTarget.getBoundingClientRect();
+bubble.style.top = `${rect.top + window.scrollY - 10}px`;
+bubble.style.left = `${rect.right + 20}px`;
+bubble.classList.add('visible');
+}
+
+function saveTaskLink(taskName) {
+const linkInput = document.getElementById('bubbleLinkInput').value.trim();
+if(linkInput) {
+taskLinksDatabase[taskName] = linkInput;
+} else {
+delete taskLinksDatabase[taskName];
+}
+syncToGlobalState();
+document.getElementById('taskBubble').classList.remove('visible');
+renderPOCs();
+showToast("Link saved successfully!", "success");
+}
+</script>

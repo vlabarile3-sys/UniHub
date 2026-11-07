@@ -1,0 +1,1744 @@
+<script>
+/**
+ * =========================================
+ * FLOWPILOT CLIENT-SIDE ENGINE (V8 FRONTEND)
+ * Module: Alignments (Forge, Agent UI, Hydra Formatter)
+ * Pipeline: Context-Aware Relational Hash Maps & Fuzzy Match Shield
+ * =========================================
+ */
+
+// --- 1. HYDRA MARKDOWN E MOTORE MATEMATICO ---
+
+// Levenshtein Distance Algoritm: Calcola la similarità percentuale tra due stringhe
+function calculateSimilarity(s1, s2) {
+    var longer = s1;
+    var shorter = s2;
+    if (s1.length < s2.length) { longer = s2; shorter = s1; }
+    var longerLength = longer.length;
+    if (longerLength == 0) return 1.0;
+    return (longerLength - editDistance(longer, shorter)) / parseFloat(longerLength);
+}
+
+function editDistance(s1, s2) {
+    s1 = s1.toLowerCase(); s2 = s2.toLowerCase();
+    var costs = new Array();
+    for (var i = 0; i <= s1.length; i++) {
+        var lastValue = i;
+        for (var j = 0; j <= s2.length; j++) {
+            if (i == 0) costs[j] = j;
+            else {
+                if (j > 0) {
+                    var newValue = costs[j - 1];
+                    if (s1.charAt(i - 1) != s2.charAt(j - 1))
+                        newValue = Math.min(Math.min(newValue, lastValue), costs[j]) + 1;
+                    costs[j - 1] = lastValue;
+                    lastValue = newValue;
+                }
+            }
+        }
+        if (i > 0) costs[s2.length] = lastValue;
+    }
+    return costs[s2.length];
+}
+
+function scanForFuzzyMatch(draftItem) {
+    let draftText = normalizeTextExtreme(draftItem.user) + normalizeTextExtreme(draftItem.bot);
+    let bestMatch = null;
+    let highestSim = 0;
+
+    if (!publishedSlidesDb || publishedSlidesDb.length === 0) return { match: null, score: 0 };
+
+    publishedSlidesDb.forEach(slide => {
+        let slideText = normalizeTextExtreme(slide.user) + normalizeTextExtreme(slide.bot);
+        let sim = calculateSimilarity(draftText, slideText);
+        if (sim > highestSim) {
+            highestSim = sim;
+            bestMatch = slide;
+        }
+    });
+    
+    return { match: bestMatch, score: highestSim };
+}
+
+function formatCellContent(text) {
+    if (!text) return '';
+    let rawText = text.toString();
+
+    // 1. ESTRAZIONE E PLACEHOLDER LINK MARKDOWN (Protezione Collisioni Regex)
+    let mdLinks = [];
+    rawText = rawText.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g, function(match, label, url) {
+        mdLinks.push({label: label, url: url});
+        return `%%MDLINK_${mdLinks.length - 1}%%`;
+    });
+
+    if (rawText.length > 150) {
+        let existingNewlines = (rawText.match(/\n/g) || []).length;
+        if (existingNewlines < Math.floor(rawText.length / 200)) {
+            let autoFormatted = "";
+            let chunkStart = 0;
+            let lastBreak = 0;
+            const sentenceEndRegex = /([.?!]['"]?)\s+((?:(?:\[\/?(?:red|green|img)\]|\*\*|__|==)\s*)*[A-Z0-9])/g;
+            let match;
+            
+            while ((match = sentenceEndRegex.exec(rawText)) !== null) {
+                let prevChar = match.index > 0 ? rawText[match.index - 1] : '';
+                let prev3 = match.index > 2 ? rawText.substring(match.index - 3, match.index).toLowerCase() : '';
+                
+                if (prevChar >= 'A' && prevChar <= 'Z') continue;
+                if (prev3 === 'e.g' || prev3 === 'i.e') continue;
+
+                let segment = rawText.substring(lastBreak, match.index);
+                if (segment.includes('\n')) {
+                    lastBreak = lastBreak + segment.lastIndexOf('\n');
+                }
+                
+                let effectiveLength = match.index - lastBreak;
+                
+                if (effectiveLength > 120) { 
+                    autoFormatted += rawText.substring(chunkStart, match.index + match[1].length) + "\n";
+                    chunkStart = match.index + match[0].length - match[2].length;
+                    lastBreak = chunkStart;
+                }
+            }
+            autoFormatted += rawText.substring(chunkStart);
+            rawText = autoFormatted;
+        }
+    }
+
+    let escaped = escapeHTML(rawText);
+    
+    const driveImgRegex = /\[img\](?:https?:\/\/)?drive\.google\.com\/(?:file\/d\/|open\?id=)([\w-]+)[^\s\[]*\[\/img\]/gi;
+    escaped = escaped.replace(driveImgRegex, function(match, fileId) {
+        const streamUrl = 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w1000';
+        return '<br><img src="' + streamUrl + '" class="bot-image-preview" onclick="openLightbox(\'' + streamUrl + '\')" alt="Bot Generated Image"><br>';
+    });
+
+    const standardImgRegex = /\[img\](https?:\/\/[^\s\[]+)\[\/img\]/gi;
+    escaped = escaped.replace(standardImgRegex, function(match, url) {
+        if(url.includes('drive.google.com')) return match; 
+        return '<br><img src="' + url + '" class="bot-image-preview" onclick="openLightbox(\'' + url + '\')" alt="Bot Generated Image"><br>';
+    });
+
+    const urlRegex = /(https?:\/\/[^\s<]+)/g;
+    escaped = escaped.replace(urlRegex, function(url) {
+        if (url.includes('drive.google.com/thumbnail?id=')) return url; 
+        return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" style="color: #60a5fa; text-decoration: underline; font-weight: 700;" onclick="event.stopPropagation()">' + url + '</a>';
+    });
+
+    const bugRegex = /\b(?:b\/|bug\s*#?|issue\s*#?)(\d+)\b/gi;
+    escaped = escaped.replace(bugRegex, function(match, bugId) {
+        return `<a href="https://issues.example.invalid/issues/${bugId}" target="_blank" rel="noopener noreferrer" class="badge bg-danger text-white px-2 py-1 mx-1 font-code" style="font-weight: 800; letter-spacing: 0.5px; text-decoration: none; box-shadow: 0 2px 4px rgba(225, 29, 72, 0.3);" onclick="event.stopPropagation()"><i class="material-icons" style="font-size: 11px; vertical-align: middle;">bug_report</i> ${match.toUpperCase()} ↗</a>`;
+    });
+
+    escaped = escaped.replace(/\*\*([\s\S]*?)\*\*/g, '<span class="md-bold">$1</span>');
+    escaped = escaped.replace(/==([\s\S]*?)==/g, '<span class="md-highlight">$1</span>');
+    escaped = escaped.replace(/__([\s\S]*?)__/g, '<span class="md-underline">$1</span>');
+    escaped = escaped.replace(/\[red\]([\s\S]*?)\[\/red\]/gi, '<span class="md-red">$1</span>');
+    escaped = escaped.replace(/\[green\]([\s\S]*?)\[\/green\]/gi, '<span class="md-green">$1</span>');
+
+    // 2. RIPRISTINO LINK MARKDOWN
+    mdLinks.forEach((linkObj, i) => {
+        let aTag = `<a href="${linkObj.url}" target="_blank" rel="noopener noreferrer" style="color: #60a5fa; text-decoration: underline; font-weight: 800;" onclick="event.stopPropagation()">${escapeHTML(linkObj.label)}</a>`;
+        escaped = escaped.replace(`%%MDLINK_${i}%%`, aTag);
+    });
+
+    var blocks = escaped.split(/\n+/);
+    var parsedHtml = blocks.map(function(block) {
+        if (block.trim() === '') return '';
+        if (block.startsWith('<br><img')) return block;
+        return '<div style="margin-bottom: 12px; line-height: 1.6;">' + block + '</div>';
+    }).join('');
+    return parsedHtml;
+}
+
+function normalizeTextExtreme(text) {
+    if (!text) return "unknown";
+    return text.toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "").trim();
+}
+
+function generateHash32(str) {
+    let hash = 0;
+    if (str.length === 0) return hash.toString(36);
+    for (let i = 0; i < str.length; i++) {
+        const char = str.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash; 
+    }
+    return Math.abs(hash).toString(36); 
+}
+
+function applyMarkdown(prefix, suffix) {
+    if (!lastFocusedTextarea) {
+        showToast("Please click inside a text box first.", "info");
+        return;
+    }
+    const el = lastFocusedTextarea;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const text = el.value;
+    const selectedText = text.substring(start, end);
+    const scrollPos = el.scrollTop;
+    el.value = text.substring(0, start) + prefix + selectedText + suffix + text.substring(end);
+    el.focus();
+    if (selectedText.length === 0) {
+        el.selectionStart = el.selectionEnd = start + prefix.length;
+    } else {
+        el.selectionStart = el.selectionEnd = start + prefix.length + selectedText.length + suffix.length;
+    }
+    el.scrollTop = scrollPos; 
+}
+
+function openInspector(text) { 
+    if(!text) return; 
+    let htmlContent = `<div style="font-size:0.95rem;">${formatCellContent(text)}</div>`; 
+    document.getElementById('inspectorContent').innerHTML = htmlContent;
+    document.getElementById('inspectorModal').style.display = 'block';
+}
+
+function openBotResponseExpanded() {
+    var item = window.currentActiveSlide;
+    if(!item) return;
+    
+    if (typeof slideExpandModalObj !== 'undefined' && slideExpandModalObj) {
+        slideExpandModalObj.hide();
+    }
+    
+    var content = formatCellContent(item.bot || 'N/A');
+    document.getElementById('botResponseExpandedEditorContainer').style.setProperty('display', 'none', 'important');
+    document.getElementById('botResponseExpandedContent').style.display = 'block';
+    document.getElementById('botResponseExpandedContent').innerHTML = content;
+    document.getElementById('btnSaveExpandedBot').style.display = 'none';
+    
+    if(botResponseExpandedModalObj) botResponseExpandedModalObj.show();
+}
+
+function openBotResponseExpandedEdit(targetId) {
+    activeBotEditTarget = targetId;
+    
+    if (typeof slideExpandModalObj !== 'undefined' && slideExpandModalObj) {
+        slideExpandModalObj.hide();
+    }
+    
+    const sourceEl = document.getElementById(targetId);
+    const content = sourceEl ? sourceEl.value : "";
+    document.getElementById('botResponseExpandedContent').style.display = 'none';
+    document.getElementById('botResponseExpandedEditorContainer').style.setProperty('display', 'flex', 'important');
+    document.getElementById('botResponseExpandedEditor').value = content;
+    document.getElementById('btnSaveExpandedBot').style.display = 'inline-block';
+    lastFocusedTextarea = document.getElementById('botResponseExpandedEditor');
+    
+    if(botResponseExpandedModalObj) botResponseExpandedModalObj.show();
+}
+
+function saveBotResponseExpanded() {
+    let wasSlideEditMode = false;
+    
+    if (activeBotEditTarget) {
+        const updatedContent = document.getElementById('botResponseExpandedEditor').value;
+        const targetEl = document.getElementById(activeBotEditTarget);
+        if (targetEl) targetEl.value = updatedContent;
+        showToast("Bot response updated in workspace editor.", "success");
+        
+        if (activeBotEditTarget === 'edit-bot') {
+            wasSlideEditMode = true;
+        }
+    }
+    if(botResponseExpandedModalObj) botResponseExpandedModalObj.hide();
+    
+    if (wasSlideEditMode && typeof slideExpandModalObj !== 'undefined' && slideExpandModalObj) {
+        setTimeout(() => slideExpandModalObj.show(), 400); 
+    }
+}
+
+function copyBotResponse() {
+    var item = window.currentActiveSlide;
+    let content = "";
+    const editorCont = document.getElementById('botResponseExpandedEditorContainer');
+    if (window.getComputedStyle(editorCont).display !== 'none') {
+        content = document.getElementById('botResponseExpandedEditor').value;
+    } else if (item) {
+        content = item.bot || '';
+    }
+    navigator.clipboard.writeText(content).then(() => showToast("Bot response copied to clipboard!", "success"));
+}
+
+// --- 2. INFOCARD CREATOR (FORGE ENGINE & DUAL-MODE) ---
+
+// GENERATORE DINAMICO DEL MODALE FUZZY MATCH
+function openFuzzyMatchModal(existing, draft, simScore, sourceType, sourceRowIdx) {
+    let modal = document.getElementById('fuzzyMatchModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'fuzzyMatchModal';
+        modal.className = 'modal fade';
+        modal.tabIndex = -1;
+        modal.style.zIndex = 1080;
+        document.body.appendChild(modal);
+    }
+
+    let simPct = (simScore * 100).toFixed(1);
+
+    let html = `
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content modal-glass shadow-lg" style="border: 1px solid var(--warning); background: var(--bg-base);">
+            <div class="modal-header border-bottom border-warning pb-3" style="background: rgba(var(--warning-rgb), 0.1);">
+                <h5 class="modal-title fw-bolder text-warning d-flex align-items-center gap-2">
+                    <i class="material-icons">warning</i> CONFLICT RESOLVER - ${simPct}% SIMILARITY DETECTED
+                </h5>
+                <button type="button" class="btn-close" style="filter: var(--close-filter, none);" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-4">
+                <div class="row g-4">
+                    <!-- LEFT: EXISTING -->
+                    <div class="col-md-6 border-end" style="border-color: var(--border-glass) !important;">
+                        <h6 class="fw-bold text-muted mb-3"><i class="material-icons align-middle" style="font-size:16px;">database</i> EXISTING INFOCARD IN DATABASE</h6>
+                        <div class="expand-verdict-banner mb-3 p-3" style="background: rgba(255,255,255,0.05); border:1px solid var(--border-glass); border-radius:12px;">
+                            <div class="text-uppercase small text-muted fw-bold">Current Verdict</div>
+                            <div class="fs-5 fw-bold text-white">${escapeHTML(existing.verdict || existing.explanation || 'N/A')}</div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="text-uppercase small text-primary fw-bold mb-1">User Prompt</div>
+                            <div class="p-3 custom-scroll glass-input" style="max-height:150px; background:rgba(59,130,246,0.05); border:1px solid rgba(59,130,246,0.2); border-radius:12px;">${formatCellContent(existing.user)}</div>
+                        </div>
+                        <div>
+                            <div class="text-uppercase small text-purple fw-bold mb-1" style="color:#c084fc;">Bot Response</div>
+                            <div class="p-3 custom-scroll glass-input" style="max-height:150px; background:rgba(168,85,247,0.05); border:1px solid rgba(168,85,247,0.2); border-radius:12px;">${formatCellContent(existing.bot)}</div>
+                        </div>
+                    </div>
+
+                    <!-- RIGHT: NEW DRAFT -->
+                    <div class="col-md-6">
+                        <h6 class="fw-bold text-primary mb-3"><i class="material-icons align-middle" style="font-size:16px;">edit_document</i> YOUR NEW DRAFT</h6>
+                        <div class="expand-verdict-banner mb-3 p-3" style="background: rgba(var(--primary-rgb), 0.1); border:1px solid var(--primary); border-radius:12px;">
+                            <div class="text-uppercase small text-primary fw-bold">New Verdict</div>
+                            <div class="fs-5 fw-bold text-white">${escapeHTML(draft.explanation || draft.verdict || 'N/A')}</div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="text-uppercase small text-primary fw-bold mb-1">User Prompt</div>
+                            <div class="p-3 custom-scroll glass-input" style="max-height:150px; background:rgba(59,130,246,0.05); border:1px solid rgba(59,130,246,0.2); border-radius:12px;">${formatCellContent(draft.user)}</div>
+                        </div>
+                        <div>
+                            <div class="text-uppercase small text-purple fw-bold mb-1" style="color:#c084fc;">Bot Response</div>
+                            <div class="p-3 custom-scroll glass-input" style="max-height:150px; background:rgba(168,85,247,0.05); border:1px solid rgba(168,85,247,0.2); border-radius:12px;">${formatCellContent(draft.bot)}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer border-top p-3" style="border-color: var(--border-glass) !important; background: var(--surface-glass);">
+                <div class="text-muted small me-auto"><i class="material-icons align-middle" style="font-size:14px;">info</i> Merging will overwrite the existing DB entry and log the change in History.</div>
+                <button class="forge-btn forge-btn-ghost text-danger border-danger" onclick="forceCreateNewInfoCard('${sourceType}', ${sourceRowIdx})">FORCE CREATE NEW</button>
+                <button class="forge-btn forge-btn-success px-4" id="btnFuzzyMerge" onclick="mergeAndUpdateInfoCard()"><i class="material-icons" style="font-size:16px;">call_merge</i> MERGE & UPDATE HISTORY</button>
+            </div>
+        </div>
+    </div>
+    `;
+    modal.innerHTML = html;
+    window._currentDraft = draft;
+    window._currentMatch = existing;
+    
+    if (!window._fuzzyModalObj) {
+        window._fuzzyModalObj = new bootstrap.Modal(modal);
+    }
+    window._fuzzyModalObj.show();
+}
+
+function forceCreateNewInfoCard(sourceType, sourceRowIdx) {
+    if (sourceType === 'manual') {
+        window._bypassFuzzyShield = true;
+        addCurrentToBatch();
+    } else if (sourceType === 'row') {
+        window._bypassFuzzyShieldRow = true;
+        const safeSheet = window._currentDraft.sourceSheet;
+        const cb = document.querySelector(`tr input[onclick*="toggleRow(${sourceRowIdx}"]`);
+        if (cb) { 
+            cb.checked = true; 
+            toggleRow(sourceRowIdx, safeSheet, cb); 
+        }
+    }
+    if (window._fuzzyModalObj) window._fuzzyModalObj.hide();
+}
+
+// === HYBRID MERGE HISTORY PATCH ===
+function mergeAndUpdateInfoCard() {
+    const draft = window._currentDraft;
+    const existing = window._currentMatch;
+    const workflow = state.activeWorkflow || 'DEMO';
+
+    const updatedData = {
+        verdict: draft.explanation, 
+        user: draft.user,
+        bot: draft.bot,
+        description: draft.description
+    };
+
+    const newHistoryBlock = {
+        date: existing.date || new Date().toISOString(),
+        verdict: existing.verdict || "Review",
+        description: existing.description || ""
+    };
+
+    let safeHistory = [];
+    if (existing._history) {
+        if (Array.isArray(existing._history)) {
+            safeHistory = [...existing._history]; 
+        } else {
+            safeHistory = [existing._history]; 
+        }
+    }
+    
+    safeHistory.unshift(newHistoryBlock);
+    
+    // SERIALIZZAZIONE BLINDATA: Forziamo la stringa JSON per il backend
+    updatedData._history = safeHistory;
+    updatedData.history_json = JSON.stringify(safeHistory);
+    updatedData.HISTORY_JSON = JSON.stringify(safeHistory);
+    updatedData.history = JSON.stringify(safeHistory);
+
+    const originalData = {
+        user: existing.user || "",
+        bot: existing.bot || ""
+    };
+
+    const btn = document.getElementById('btnFuzzyMerge');
+    const oldHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> MERGING...';
+    btn.disabled = true;
+
+    google.script.run.withSuccessHandler(res => {
+        btn.innerHTML = oldHtml;
+        btn.disabled = false;
+        if (res.success) {
+            showToast("InfoCard successfully merged! History updated.", "success");
+            if (window._fuzzyModalObj) window._fuzzyModalObj.hide();
+            
+            document.getElementById('val-user').value = '';
+            document.getElementById('val-bot').value = '';
+            document.getElementById('val-explanation').value = '';
+            document.getElementById('val-description').value = '';
+            document.getElementById('val-tentative').checked = false;
+            if (typeof initPolicyChips === 'function') initPolicyChips('');
+            
+            loadPublishedDbForQA();
+            loadAgentAlignments();
+            if (typeof fetchKbMetrics === 'function') fetchKbMetrics();
+        } else {
+            showToast(res.error, "error");
+        }
+    }).withFailureHandler(err => {
+        btn.innerHTML = oldHtml;
+        btn.disabled = false;
+        showToast(err.message, "error");
+    }).updateAlignment(existing.date, workflow, updatedData, originalData);
+}
+// ===================================
+
+function handleSearch(e) {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        const query = (e.target.value || "").trim();
+        const sourceIdInput = document.getElementById('sourceId');
+        
+        if (!sourceIdInput || !sourceIdInput.value) {
+            showToast("Please connect a Google Sheet first.", "error");
+            if (document.activeElement) document.activeElement.blur();
+            return;
+        }
+
+        const sheetId = (typeof extractIdFromUrl === 'function') ? extractIdFromUrl(sourceIdInput.value) : sourceIdInput.value;
+
+        if (query === "") {
+            state.isGlobalSearch = false;
+            if (window._forgeUnfilteredData) {
+                state.fullData = [...window._forgeUnfilteredData];
+            }
+            if (state.cachedSheet) {
+                renderLocalTable(1);
+                showToast("Search cleared. Showing current tab.", "info");
+            } else {
+                document.getElementById('tBody').innerHTML = '<tr><td colspan="5" class="text-center text-muted">Select a Worksheet to begin.</td></tr>';
+            }
+            if (document.activeElement) document.activeElement.blur();
+            return;
+        }
+
+        if (!state.tabs || state.tabs.length === 0) {
+            showToast("No tabs detected. Please sync the spreadsheet.", "error");
+            return;
+        }
+
+        state.isGlobalSearch = true;
+        showToast("Searching across all tabs...", "info");
+        loader(true);
+        
+        const pageInfo = document.getElementById('pageInfo');
+        if (pageInfo) pageInfo.innerHTML = `<span class="spinner-border spinner-border-sm text-primary"></span> Scanning...`;
+        
+        document.getElementById('tBody').innerHTML = `<tr><td colspan="10" class="text-center text-primary fw-bold py-4"><span class="spinner-border spinner-border-sm me-2"></span> Searching globally for "${escapeHTML(query)}"...</td></tr>`;
+
+        const tabNames = state.tabs.map(t => t.name);
+        
+        google.script.run.withSuccessHandler(res => {
+            loader(false);
+            if (res.success) {
+                if (res.results.length === 0) {
+                    showToast(`No matches found for "${query}".`, "warning");
+                    document.getElementById('tBody').innerHTML = `<tr><td colspan="10" class="text-center text-muted py-4"><i class="material-icons d-block mb-2" style="font-size:32px; opacity:0.5">search_off</i> No results found.</td></tr>`;
+                    if (pageInfo) pageInfo.innerText = "0 matches";
+                } else {
+                    const matchCount = res.results.length;
+                    showToast(`Found ${matchCount} match(es). Jumping to first result in ${res.results[0].sheetName}...`, "success");
+                    jumpToGlobalResult(res.results[0].sheetName, res.results[0].row);
+                }
+            } else {
+                showToast("Search failed: " + res.error, "error");
+                if (pageInfo) pageInfo.innerText = "Search Error";
+            }
+        }).searchAdvancedMultiTab({ spreadsheetId: sheetId, tabs: tabNames, query: query });
+        
+        if (document.activeElement) document.activeElement.blur();
+    }
+}
+
+function jumpToGlobalResult(sheetName, rowIdx) {
+    const tabIndex = state.tabs.findIndex(t => t.name === sheetName);
+    if (tabIndex === -1) {
+        showToast("Tab not found in memory.", "error");
+        return;
+    }
+
+    state.isGlobalSearch = false; 
+    document.getElementById('tabSelect').value = tabIndex;
+    
+    const sheetId = (typeof extractIdFromUrl === 'function') ? extractIdFromUrl(document.getElementById('sourceId').value) : document.getElementById('sourceId').value;
+    state.cachedSheet = null; 
+    state.specificRowId = rowIdx;
+    
+    const localCfgStr = localStorage.getItem(`V26_CFG_${sheetId}_${sheetName}`);
+    if (localCfgStr) {
+        try {
+            const localCfg = JSON.parse(localCfgStr);
+            document.getElementById('headerRow').value = localCfg.headerRow || 1;
+            state.pendingMap = localCfg.mapping;
+        } catch(e){}
+    }
+    
+    loader(true);
+    google.script.run.withSuccessHandler(res => {
+        if(res.success && res.config) { 
+            document.getElementById('headerRow').value = res.config.headerRow || 1; 
+            state.pendingMap = res.config.mapping; 
+            localStorage.setItem(`V26_CFG_${sheetId}_${sheetName}`, JSON.stringify(res.config));
+        }
+        
+        google.script.run.withSuccessHandler(headerRes => {
+            loader(false);
+            if(headerRes.success) { 
+                state.headers = headerRes.headers; 
+                updateMaps(); 
+                loadTable(1, rowIdx); 
+            } else {
+                showToast("Failed to load tab headers.", "error");
+            }
+        }).getSheetHeaders({ spreadsheetId: sheetId, sheetName: sheetName, headerRow: document.getElementById('headerRow').value });
+        
+    }).loadSheetConfig({ spreadsheetId: sheetId, sheetName: sheetName });
+}
+
+function setForgeMode(mode) {
+    const container = document.getElementById('forgeBentoContainer');
+    const btnManual = document.getElementById('btnModeManual');
+    const btnSync = document.getElementById('btnModeSync');
+    
+    if (mode === 'manual') {
+        container.classList.add('forge-manual-mode');
+        if(btnManual) btnManual.classList.add('active');
+        if(btnSync) btnSync.classList.remove('active');
+        showToast("Switched to Focused Manual Entry", "info");
+    } else {
+        container.classList.remove('forge-manual-mode');
+        if(btnSync) btnSync.classList.add('active');
+        if(btnManual) btnManual.classList.remove('active');
+    }
+    updateCartUI();
+}
+
+function extractIdFromUrl(str) { 
+    const match = str.match(/\/d\/([a-zA-Z0-9-_]+)/); 
+    return match ? match[1] : str; 
+}
+
+function onWorkflowFilterChange() { 
+    const newWorkflow = document.getElementById('workflowFilter').value;
+    state.activeWorkflow = newWorkflow; 
+    state.specificRowId = null; 
+    
+    if (typeof updateActiveWorkflowData === 'function') {
+        updateActiveWorkflowData(newWorkflow);
+    }
+    
+    if (typeof initPolicyChips === 'function') {
+        initPolicyChips('');
+    }
+
+    loadPublishedDbForQA();
+    if(state.cachedSheet) loadTable(1);
+}
+
+function loadPublishedDbForQA() {
+    if (state.activeWorkflow === 'ALL') return;
+    google.script.run.withSuccessHandler(res => {
+        if(res.success && res.data) {
+            publishedSlidesDb = res.data;
+            if (state.fullData && state.fullData.length > 0 && !state.isGlobalSearch) renderLocalTable(state.currentPage);
+        }
+    }).fetchAlignments(state.activeWorkflow);
+}
+
+function connectSheet() {
+    const id = (typeof extractIdFromUrl === 'function') ? extractIdFromUrl(document.getElementById('sourceId').value) : document.getElementById('sourceId').value; 
+    if(!id) return;
+    document.getElementById('sourceId').value = id; 
+    localStorage.setItem('studio_last_url', id); 
+    loader(true);
+    const btn = document.getElementById('btnConnectSync');
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; 
+    btn.disabled = true;
+    google.script.run.withSuccessHandler(res => {
+        loader(false); 
+        btn.innerHTML = originalHtml; 
+        btn.disabled = false;
+        if(res.success) {
+            state.tabs = res.metadata;
+            const sel = document.getElementById('tabSelect'); 
+            sel.innerHTML = '<option value="">-- Select Sheet --</option>';
+            res.metadata.forEach((m,i) => sel.innerHTML += `<option value="${i}">${escapeHTML(m.name)}</option>`);
+            document.getElementById('configArea').style.display = 'block'; 
+            showToast("Spreadsheet connected successfully.");
+            if (typeof populateSearchTabsList === 'function') populateSearchTabsList(res.metadata); 
+        } else showToast(res.error, "error");
+    }).getSheetMetadata(id);
+}
+
+function onTabChange() {
+    const idx = document.getElementById('tabSelect').value; 
+    if(idx === "") return;
+    const tabName = state.tabs[idx].name;
+    const sheetId = (typeof extractIdFromUrl === 'function') ? extractIdFromUrl(document.getElementById('sourceId').value) : document.getElementById('sourceId').value;
+    state.cachedSheet = null; 
+    state.specificRowId = null;
+    state.isGlobalSearch = false;
+    
+    const localCfgStr = localStorage.getItem(`V26_CFG_${sheetId}_${tabName}`);
+    if (localCfgStr) {
+        try {
+            const localCfg = JSON.parse(localCfgStr);
+            document.getElementById('headerRow').value = localCfg.headerRow || 1;
+            state.pendingMap = localCfg.mapping;
+        } catch(e){}
+    }
+    loader(true);
+    google.script.run.withSuccessHandler(res => {
+        loader(false);
+        if(res.success && res.config) { 
+            document.getElementById('headerRow').value = res.config.headerRow||1; 
+            state.pendingMap = res.config.mapping; 
+            localStorage.setItem(`V26_CFG_${sheetId}_${tabName}`, JSON.stringify(res.config));
+        }
+        fetchHeaders(false);
+    }).loadSheetConfig({ spreadsheetId: sheetId, sheetName: tabName });
+}
+
+function onHeaderRowChange() {
+    onMappingChange(); 
+    fetchHeaders(true);
+}
+
+function fetchHeaders(isRefetch = false) {
+    const idx = document.getElementById('tabSelect').value;
+    if(idx === "") return; 
+    loader(true);
+    let btn, originalHtml;
+    if (isRefetch) { 
+        btn = document.getElementById('btnRefetch'); 
+        if (btn) { 
+            originalHtml = btn.innerHTML;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; 
+            btn.disabled = true; 
+        } 
+    }
+    google.script.run.withSuccessHandler(res => {
+        if (isRefetch && btn) { btn.innerHTML = originalHtml; btn.disabled = false; }
+        if(res.success) { 
+            state.headers = res.headers; 
+            updateMaps(); 
+            if(typeof loadTable === 'function') loadTable('last'); 
+        }
+    }).getSheetHeaders({ spreadsheetId: document.getElementById('sourceId').value, sheetName: state.tabs[idx].name, headerRow: document.getElementById('headerRow').value });
+}
+
+function updateMaps() {
+    const map = state.pendingMap || {};
+    document.querySelectorAll('.col-map').forEach(sel => {
+        const field = sel.dataset.field; 
+        let saved = map[field];
+        sel.innerHTML = '<option value="">-- Skip --</option>';
+        state.headers.forEach(h => { 
+            let isSel = (h.index == saved) ? 'selected' : '';
+            sel.innerHTML += `<option value="${h.index}" ${isSel}>${escapeHTML(h.name)}</option>`; 
+        });
+    });
+}
+
+function onMappingChange() {
+    const idx = document.getElementById('tabSelect').value; 
+    if(idx === "") return;
+    const tabName = state.tabs[idx].name;
+    const sheetId = (typeof extractIdFromUrl === 'function') ? extractIdFromUrl(document.getElementById('sourceId').value) : document.getElementById('sourceId').value;
+    const mapping = {};
+    document.querySelectorAll('.col-map').forEach(s => mapping[s.dataset.field] = s.value);
+    const headerRowVal = document.getElementById('headerRow').value;
+    localStorage.setItem(`V26_CFG_${sheetId}_${tabName}`, JSON.stringify({ headerRow: headerRowVal, mapping: mapping }));
+    google.script.run.saveSheetConfig({ spreadsheetId: sheetId, sheetName: tabName, headerRow: headerRowVal, mapping: mapping });
+    
+    if(typeof renderLocalTable === 'function' && !state.isGlobalSearch) renderLocalTable(state.currentPage);
+}
+
+function showTableSkeleton() {
+    const tbody = document.getElementById('tBody');
+    let skeletonHtml = '';
+    for(let i=0; i<8; i++) {
+        skeletonHtml += `<tr>
+            <td style="width: 50px;"><div class="skeleton-box" style="width: 18px; height: 18px; border-radius: 4px;"></div></td>
+            <td style="width: 60px;"><div class="skeleton-box" style="width: 30px;"></div></td>
+            <td><div class="skeleton-box" style="width: ${Math.floor(Math.random() * 40 + 50)}%;"></div></td>
+            <td><div class="skeleton-box" style="width: ${Math.floor(Math.random() * 40 + 50)}%;"></div></td>
+            <td><div class="skeleton-box" style="width: ${Math.floor(Math.random() * 40 + 50)}%;"></div></td>
+        </tr>`;
+    }
+    tbody.innerHTML = skeletonHtml;
+}
+
+function loadTable(targetPage = 'last', specificRowId = null) {
+    const idx = document.getElementById('tabSelect').value;
+    if(idx === "") return;
+    const tabName = state.tabs[idx].name;
+    state.specificRowId = specificRowId; 
+    
+    if(state.cachedSheet === tabName && !specificRowId) return renderLocalTable(targetPage);
+    
+    loader(true);
+    const infoEl = document.getElementById('pageInfo');
+    if (infoEl) infoEl.innerHTML = `<span class="spinner-border spinner-border-sm text-primary"></span> Syncing Cache...`; 
+    
+    showTableSkeleton();
+    google.script.run.withSuccessHandler(res => {
+        loader(false);
+        if(res.success) { 
+            state.fullData = res.data; 
+            state.cachedSheet = tabName; 
+            window._forgeUnfilteredData = [...state.fullData];
+            if(res.cached) {
+                showToast("Loaded from High-Speed L2 Cache ⚡", "info");
+            }
+            renderLocalTable(targetPage); 
+        } else showToast(res.error, "error");
+    }).fetchFullSheetData({ 
+        spreadsheetId: document.getElementById('sourceId').value, 
+        sheetName: tabName, 
+        headerRow: document.getElementById('headerRow').value 
+    });
+}
+
+function renderLocalTable(targetPage = 1) {
+    if (state.isGlobalSearch) return; 
+
+    const tbody = document.getElementById('tBody'); 
+    tbody.innerHTML = '';
+    const thead = document.getElementById('tHead');
+    let headerHtml = '<tr><th style="width:60px">Add</th><th style="width:60px">Row</th>';
+    state.headers.forEach(h => { 
+        headerHtml += `<th class="col-idx-${h.index}">${escapeHTML(h.name)}</th>`; 
+    });
+    headerHtml += '</tr>'; 
+    thead.innerHTML = headerHtml;
+    
+    let filtered = state.fullData || [];
+    
+    if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="${state.headers.length + 2}" class="text-center py-4 text-muted"><i class="material-icons opacity-50 d-block mb-2" style="font-size:32px;">search_off</i> Nessun risultato per questa ricerca.</td></tr>`;
+        const pageEl = document.getElementById('pageInfo');
+        if(pageEl) pageEl.innerText = `0 items`;
+        return;
+    }
+
+    const mediaFilterVal = document.getElementById('mediaTypeFilter') ? document.getElementById('mediaTypeFilter').value : 'ALL';
+    const botColIdx = document.querySelector('.col-map[data-field="bot"]')?.value;
+    
+    if (mediaFilterVal === 'IMAGE' && botColIdx !== "" && botColIdx != null) {
+        const targetIdx = parseInt(botColIdx);
+        filtered = filtered.filter(row => (row.cells[targetIdx] || "").toString().toLowerCase().includes('[img]'));
+    }
+
+    let paginatedData = [];
+    let itemsPerPage = 30;
+    const userColIdx = document.querySelector('.col-map[data-field="user"]')?.value;
+    const targetChannel = document.getElementById('targetChannel') ? document.getElementById('targetChannel').value : 'General KB';
+    
+    if (state.specificRowId) { 
+        paginatedData = filtered.filter(r => r.realRowIndex == state.specificRowId);
+        const pageEl = document.getElementById('pageInfo');
+        if(pageEl) pageEl.innerHTML = `<span style="color:var(--primary); font-weight:700;">FOCUS MODE (Row ${state.specificRowId})</span>`;
+    } else { 
+        state.totalPages = Math.ceil(filtered.length / itemsPerPage) || 1;
+        if (targetPage === 'last') state.currentPage = state.totalPages;
+        else if (targetPage !== null) state.currentPage = targetPage;
+        if (state.currentPage < 1) state.currentPage = 1;
+        if (state.currentPage > state.totalPages) state.currentPage = state.totalPages;
+        let startIdx = (state.currentPage - 1) * itemsPerPage;
+        let endIdx = startIdx + itemsPerPage;
+        paginatedData = filtered.slice(startIdx, endIdx);
+        const pageEl = document.getElementById('pageInfo');
+        if(pageEl) pageEl.innerText = `Page ${state.currentPage} of ${state.totalPages} (${filtered.length} items)`;
+    }
+
+    paginatedData.forEach(r => {
+        const tr = document.createElement('tr'); 
+        const isInCart = state.cart.some(i => i.sourceRow === r.realRowIndex && i.sourceSheet === state.cachedSheet);
+        if(isInCart) tr.classList.add('row-selected');
+        
+        let isPublished = false;
+        if (userColIdx && userColIdx !== "" && publishedSlidesDb.length > 0) {
+            const promptText = (r.cells[parseInt(userColIdx)] || "").toString().trim();
+            const bugText = (botColIdx && botColIdx !== "") ? (r.cells[parseInt(botColIdx)] || "").toString().trim() : "";
+            
+            if (promptText) {
+                const normPrompt = normalizeTextExtreme(promptText);
+                const normBot = normalizeTextExtreme(bugText);
+                isPublished = publishedSlidesDb.some(slide => {
+                    const sPrompt = normalizeTextExtreme(slide.user);
+                    const sBot = normalizeTextExtreme(slide.bot);
+                    return sPrompt === normPrompt && sBot === normBot && (slide.channel || 'General KB') === targetChannel;
+                });
+            }
+        }
+        if (isPublished) tr.classList.add('ghost-green');
+        let isChk = isInCart ? 'checked' : '';
+        let safeSheet = escapeForFunctionCall(state.cachedSheet);
+        let html = `<td><input type="checkbox" class="neon-checkbox" onclick="toggleRow(${r.realRowIndex}, '${safeSheet}', this)" ${isChk}></td><td style="color:var(--primary); font-weight:700;">${r.realRowIndex}</td>`;
+        for (let i = 0; i < state.headers.length; i++) { 
+            let safeCell = escapeHTML(r.cells[i] || '');
+            html += `<td class="col-idx-${state.headers[i].index}" onclick="openInspector(this.innerText)" title="${safeCell}">${safeCell}</td>`; 
+        }
+        tr.innerHTML = html; 
+        tbody.appendChild(tr);
+    });
+    if (typeof applyColumnVisibility === 'function') applyColumnVisibility();
+}
+
+function changePage(dir) { 
+    if (state.isGlobalSearch) return; 
+    if(!state.fullData || state.fullData.length === 0) return;
+    state.specificRowId = null;
+    let newPage = state.currentPage + dir;
+    if (newPage >= 1 && newPage <= state.totalPages) {
+        renderLocalTable(newPage);
+    } else {
+        showToast("Page limit reached.", "info");
+    }
+}
+
+function forceRefresh() { 
+    state.cachedSheet = null; 
+    state.specificRowId = null; 
+    state.isGlobalSearch = false;
+    showToast("Refreshing data...", "info"); 
+    loadTable(state.currentPage);
+}
+
+function openColumnManager() {
+    const list = document.getElementById('colManagerList'); 
+    list.innerHTML = '';
+    state.headers.forEach(h => {
+        const isVisible = !state.hiddenColumns.has(h.index);
+        let chk = isVisible ? 'checked' : '';
+        list.innerHTML += `<div class="d-flex align-items-center gap-2 mb-2 p-2 border rounded" style="border-color:var(--border-glass) !important"><input type="checkbox" class="neon-checkbox" onchange="toggleColumnState(${h.index}, this.checked)" ${chk}><span class="small fw-bold">${escapeHTML(h.name)}</span></div>`;
+    });
+    document.getElementById('columnModal').style.display = 'block';
+}
+
+function toggleColumnState(index, isVisible) { 
+    if (isVisible) state.hiddenColumns.delete(index); 
+    else state.hiddenColumns.add(index); 
+    if (typeof applyColumnVisibility === 'function') applyColumnVisibility();
+}
+
+function toggleAllColumns(show) { 
+    document.querySelectorAll('#colManagerList input[type="checkbox"]').forEach(cb => { 
+        cb.checked = show; 
+        cb.dispatchEvent(new Event('change')); 
+    });
+}
+
+function applyColumnVisibility() {
+    if (state.isGlobalSearch) return; 
+    const styleEl = document.getElementById('dynamic-col-styles'); 
+    const hiddenIndices = Array.from(state.hiddenColumns);
+    if (hiddenIndices.length === 0) { 
+        styleEl.textContent = ''; 
+        return;
+    }
+    styleEl.textContent = hiddenIndices.map(i => '.col-idx-' + i).join(', ') + ' { display: none !important; }';
+}
+
+function toggleRow(rIdx, sheetName, checkbox) {
+    if(checkbox.checked) {
+        const row = state.fullData.find(r => r.realRowIndex === rIdx);
+        if(!row) return;
+        const mapping = {}; 
+        document.querySelectorAll('.col-map').forEach(s => mapping[s.dataset.field] = s.value);
+        const getVal = (idx) => (idx !== "" && idx != null) ? (row.cells[parseInt(idx)] || "") : "";
+        
+        let draftItem = { 
+            user: getVal(mapping.user), 
+            bot: getVal(mapping.bot), 
+            explanation: getVal(mapping.explanation), 
+            description: getVal(mapping.description), 
+            sourceSheet: sheetName, 
+            sourceRow: rIdx 
+        };
+
+        let result = scanForFuzzyMatch(draftItem);
+        if (result.score >= 0.85 && !window._bypassFuzzyShieldRow) {
+            checkbox.checked = false; 
+            openFuzzyMatchModal(result.match, draftItem, result.score, 'row', rIdx);
+            return;
+        }
+        window._bypassFuzzyShieldRow = false; 
+        
+        state.cart.push(draftItem);
+    } else { 
+        state.cart = state.cart.filter(i => !(i.sourceRow === rIdx && i.sourceSheet === sheetName));
+    }
+    updateCartUI(); 
+    if (!state.isGlobalSearch) renderLocalTable(state.currentPage);
+}
+
+function updateCartUI() {
+    const c = document.getElementById('cartList'); 
+    c.innerHTML = '';
+    const normBtns = document.getElementById('actionButtonsNormal'), 
+          editBtns = document.getElementById('actionButtonsEdit'), 
+          inputs = document.getElementById('editInputs'), 
+          cartView = document.getElementById('cartView'),
+          container = document.getElementById('forgeBentoContainer');
+          
+    const isManual = container && container.classList.contains('forge-manual-mode');
+    
+    if (state.editingCartIndex !== null && !state.cart[state.editingCartIndex]) {
+        state.editingCartIndex = null;
+    }
+
+    let placeholder = document.getElementById('syncPlaceholder');
+    if (!placeholder && inputs) {
+        placeholder = document.createElement('div');
+        placeholder.id = 'syncPlaceholder';
+        placeholder.className = 'flex-column align-items-center justify-content-center flex-grow-1 text-muted text-center p-4';
+        placeholder.innerHTML = '<i class="material-icons mb-2" style="font-size:48px; opacity:0.3;">touch_app</i><div class="fw-bold font-display" style="font-size: 1.1rem; letter-spacing: 0.5px;">AWAITING SELECTION</div><div class="small mt-2" style="max-width: 250px;">Select a row from the Live Data table to extract and stage its content.</div>';
+        inputs.parentNode.insertBefore(placeholder, inputs);
+    }
+
+    const rowDispEl = document.getElementById('rowDisp');
+    const rowDispWrapper = rowDispEl ? rowDispEl.parentElement : null;
+          
+    if (state.editingCartIndex !== null) {
+        if(rowDispEl) rowDispEl.value = `EDIT INFOCARD #${state.editingCartIndex + 1}`;
+        if(rowDispWrapper) rowDispWrapper.style.setProperty('display', 'block', 'important');
+        inputs.style.setProperty('display', 'block', 'important'); 
+        if(placeholder) placeholder.style.setProperty('display', 'none', 'important');
+        cartView.style.setProperty('display', 'none', 'important'); 
+        normBtns.style.setProperty('display', 'none', 'important'); 
+        editBtns.style.setProperty('display', 'flex', 'important');
+        const d = state.cart[state.editingCartIndex];
+        
+        let exp = d.explanation || "";
+        let isTent = false;
+        if (exp.startsWith("Tentative: ")) {
+            isTent = true;
+            exp = exp.substring(11).trim();
+        }
+        if (typeof initPolicyChips === 'function') initPolicyChips(exp);
+        document.getElementById('val-tentative').checked = isTent;
+
+        document.getElementById('val-user').value = d.user;
+        document.getElementById('val-bot').value = d.bot; 
+        document.getElementById('val-description').value = d.description;
+        return;
+    }
+    
+    normBtns.style.setProperty('display', 'flex', 'important');
+    editBtns.style.setProperty('display', 'none', 'important');
+    
+    state.cart.forEach((item, i) => { 
+        c.innerHTML += `<div class="cart-item"><div><span class="cart-badge">${i+1}</span><b>${escapeHTML(item.sourceSheet)}</b> #${item.sourceRow}</div><div class="d-flex gap-2"><div style="cursor:pointer; color:var(--primary);" onclick="editCartItem(${i})"><i class="material-icons" style="font-size:16px;">edit</i></div><div style="cursor:pointer; color:#ef4444;" onclick="state.cart.splice(${i},1); updateCartUI(); if(!state.isGlobalSearch) renderLocalTable(state.currentPage);"><i class="material-icons" style="font-size:16px;">close</i></div></div></div>`; 
+    });
+    
+    if(state.cart.length === 0) {
+        if(rowDispEl) rowDispEl.value = ""; 
+        if(rowDispWrapper) rowDispWrapper.style.setProperty('display', 'none', 'important'); 
+        
+        document.getElementById('clearBtn').style.display = 'none';
+        
+        if (isManual) {
+            inputs.style.setProperty('display', 'block', 'important');
+            if(placeholder) placeholder.style.setProperty('display', 'none', 'important');
+            document.getElementById('genBtn').disabled = false;
+            document.getElementById('addManualBtn').style.display = 'block';
+        } else {
+            inputs.style.setProperty('display', 'none', 'important'); 
+            if(placeholder) placeholder.style.setProperty('display', 'flex', 'important'); 
+            document.getElementById('genBtn').disabled = true; 
+            document.getElementById('addManualBtn').style.display = 'none';
+        }
+        
+        cartView.style.setProperty('display', 'none', 'important');
+        document.getElementById('val-tentative').checked = false;
+    } else {
+        if(rowDispEl) rowDispEl.value = `${state.cart.length} STAGED`;
+        if(rowDispWrapper) rowDispWrapper.style.setProperty('display', 'block', 'important'); 
+        
+        document.getElementById('clearBtn').style.display = 'block';
+        inputs.style.setProperty('display', 'block', 'important'); 
+        if(placeholder) placeholder.style.setProperty('display', 'none', 'important');
+        cartView.style.setProperty('display', 'block', 'important'); 
+        document.getElementById('genBtn').disabled = false;
+        document.getElementById('addManualBtn').style.display = 'block';
+    }
+}
+
+function addCurrentToBatch() { 
+    const uVal = document.getElementById('val-user').value.trim();
+    const bVal = document.getElementById('val-bot').value.trim();
+    
+    if (!uVal && !bVal) {
+        return showToast("Please provide a Prompt or Response before queuing.", "error");
+    }
+    
+    let baseVerdict = document.getElementById('val-explanation').value;
+    let isTentative = document.getElementById('val-tentative').checked;
+    let finalVerdict = isTentative ? "Tentative: " + (baseVerdict || "Review") : baseVerdict;
+
+    let draftItem = { 
+        user: document.getElementById('val-user').value, 
+        bot: document.getElementById('val-bot').value, 
+        explanation: finalVerdict, 
+        description: document.getElementById('val-description').value, 
+        sourceSheet: 'Manual', 
+        sourceRow: 'Custom' 
+    };
+
+    let result = scanForFuzzyMatch(draftItem);
+    if (result.score >= 0.85 && !window._bypassFuzzyShield) {
+        openFuzzyMatchModal(result.match, draftItem, result.score, 'manual', null);
+        return; 
+    }
+    window._bypassFuzzyShield = false; 
+
+    state.cart.push(draftItem);
+    
+    document.getElementById('val-user').value = '';
+    document.getElementById('val-bot').value = '';
+    document.getElementById('val-explanation').value = '';
+    document.getElementById('val-description').value = '';
+    document.getElementById('val-tentative').checked = false;
+    if (typeof initPolicyChips === 'function') initPolicyChips('');
+    
+    updateCartUI(); 
+    showToast("InfoCard queued! Ready for next entry.", "success"); 
+}
+
+function clearCart() { 
+    state.cart = []; 
+    
+    document.getElementById('val-user').value = '';
+    document.getElementById('val-bot').value = '';
+    document.getElementById('val-explanation').value = '';
+    document.getElementById('val-description').value = '';
+    document.getElementById('val-tentative').checked = false;
+    if (typeof initPolicyChips === 'function') initPolicyChips('');
+    
+    updateCartUI(); 
+    if(!state.isGlobalSearch) renderLocalTable(state.currentPage);
+}
+
+function editCartItem(index) { 
+    state.editingCartIndex = index; 
+    updateCartUI();
+}
+
+function cancelCartItemEdit() { 
+    state.editingCartIndex = null; 
+    updateCartUI();
+    document.getElementById('val-user').value=''; 
+    document.getElementById('val-bot').value=''; 
+    document.getElementById('val-description').value=''; 
+    document.getElementById('val-tentative').checked = false;
+    if (typeof initPolicyChips === 'function') initPolicyChips('');
+}
+
+function saveCartItemEdit() { 
+    if (state.editingCartIndex !== null) { 
+        const item = state.cart[state.editingCartIndex];
+        let baseVerdict = document.getElementById('val-explanation').value;
+        let isTentative = document.getElementById('val-tentative').checked;
+        
+        item.user = document.getElementById('val-user').value; 
+        item.bot = document.getElementById('val-bot').value; 
+        item.explanation = isTentative ? "Tentative: " + (baseVerdict || "Review") : baseVerdict; 
+        item.description = document.getElementById('val-description').value; 
+        
+        state.editingCartIndex = null; 
+        updateCartUI(); 
+        showToast("Changes saved successfully.", "success");
+        document.getElementById('val-user').value=''; 
+        document.getElementById('val-bot').value=''; 
+        document.getElementById('val-description').value=''; 
+        document.getElementById('val-tentative').checked = false;
+        if (typeof initPolicyChips === 'function') initPolicyChips('');
+    } 
+}
+
+function publishToAgents() {
+    if(state.activeWorkflow === 'ALL') return showToast("Please select a specific workflow to publish.", "error");
+    
+    const uVal = document.getElementById('val-user').value.trim();
+    const bVal = document.getElementById('val-bot').value.trim();
+    
+    if (uVal || bVal) {
+        let baseVerdict = document.getElementById('val-explanation').value;
+        let isTentative = document.getElementById('val-tentative').checked;
+        
+        let draftItem = {
+            user: document.getElementById('val-user').value, 
+            bot: document.getElementById('val-bot').value, 
+            explanation: isTentative ? "Tentative: " + (baseVerdict || "Review") : baseVerdict, 
+            description: document.getElementById('val-description').value, 
+            sourceSheet: 'Manual', 
+            sourceRow: 'Custom'
+        };
+        
+        let result = scanForFuzzyMatch(draftItem);
+        if (result.score >= 0.85 && !window._bypassFuzzyShield) {
+            openFuzzyMatchModal(result.match, draftItem, result.score, 'manual', null);
+            return; 
+        }
+        window._bypassFuzzyShield = false;
+        state.cart.push(draftItem);
+    }
+    
+    if(state.cart.length === 0) { 
+        return showToast("The publishing queue is empty.", "error"); 
+    }
+    
+    const btn = document.getElementById('genBtn');
+    btn.disabled = true; 
+    btn.innerHTML = '<i class="material-icons" style="font-size:20px;">hourglass_empty</i> PUBLISHING...';
+    
+    const dateStr = document.getElementById('slideDate').value;
+    let baseDate = new Date();
+    if (dateStr) {
+        const parts = dateStr.split('-');
+        baseDate = new Date(parts[0], parts[1] - 1, parts[2]); 
+    }
+    const now = new Date();
+    baseDate.setHours(now.getHours(), now.getMinutes(), now.getSeconds(), 0);
+    const absoluteTime = baseDate.toISOString();
+    
+    const channelTarget = document.getElementById('targetChannel').value;
+    const payload = state.cart.map(item => ({ ...item, date: absoluteTime, verdict: item.explanation, channel: channelTarget }));
+    google.script.run.withSuccessHandler(res => {
+        btn.disabled = false; 
+        btn.innerHTML = '<i class="material-icons" style="font-size:20px;">rocket_launch</i> PUBLISH';
+        if(res.success) { 
+            clearCart(); 
+            document.getElementById('val-user').value=''; 
+            document.getElementById('val-bot').value=''; 
+            document.getElementById('val-explanation').value=''; 
+            document.getElementById('val-description').value=''; 
+            document.getElementById('val-tentative').checked = false;
+            if (typeof initPolicyChips === 'function') initPolicyChips('');
+            showToast(`${res.count} InfoCards successfully published to ${channelTarget}!`, "success"); 
+            loadPublishedDbForQA(); 
+            loadAgentAlignments();
+            if (typeof fetchKbMetrics === 'function') fetchKbMetrics(); 
+        } else {
+            showToast(res.error, "error");
+        }
+    }).publishAlignments(JSON.stringify(payload), state.activeWorkflow);
+}
+
+// --- 3. AGENT CHRONO GALLERY & VIEWER ---
+
+function switchAgentChannel(channelName, el) {
+    activeAgentChannel = channelName;
+    if(typeof switchView === 'function') switchView('alignments', el);
+    
+    const titleEl = document.getElementById('agentChannelTitle');
+    if(titleEl) {
+        let chColor = '#10b981'; 
+        let bgRgb = '16, 185, 129';
+        
+        if (channelName.toLowerCase().includes('team guides') || channelName.toLowerCase().includes('guide')) { 
+            chColor = '#fbbf24'; bgRgb = '251, 191, 36';
+        } else if (channelName.toLowerCase().includes('release notes') || channelName.toLowerCase().includes('slide')) { 
+            chColor = '#60a5fa'; bgRgb = '96, 165, 250';
+        } else if (channelName.toLowerCase().includes('urgent')) { 
+            chColor = '#e11d48'; bgRgb = '225, 29, 72';
+        }
+        
+        titleEl.innerHTML = `${escapeHTML(channelName).toUpperCase()} <span id="agentSlideCount" class="badge rounded-pill ms-3" style="font-size: 0.75rem; background: rgba(${bgRgb}, 0.1); border: 1px solid rgba(${bgRgb}, 0.3); color: ${chColor}; vertical-align: middle; box-shadow: none;">0 InfoCards</span>`;
+        titleEl.style.color = chColor;
+    }
+    
+    if(typeof closeAgentSideSheet === 'function') closeAgentSideSheet();
+    filterDigitalSlides();
+}
+
+function openAgentSideSheet(item) {
+    if (!item) return;
+    window.currentActiveSlide = item;
+
+    const bodyEl = document.getElementById('agentSideSheetBody');
+    let vText = (item.verdict || "Review").trim();
+    let vLower = vText.toLowerCase();
+    
+    let verdictCss = 'violation';
+    if (vLower.startsWith('tentative') || vLower.includes('tentative')) verdictCss = 'warning';
+    else if(vLower.includes('no violation') || vLower.includes('safe') || vLower.includes('ok') || vLower.includes('non violative')) verdictCss = 'safe';
+
+    let historyHtml = '';
+    if(item._history && Array.isArray(item._history) && item._history.length > 0) {
+        historyHtml = '<div class="mt-3 p-3 border rounded" style="background:rgba(var(--primary-rgb),0.05); border-color:var(--border-glass)!important;">' +
+            '<div class="expand-card-header" style="margin-bottom:8px;"><i class="material-icons align-middle me-1">history</i> Policy Evolution</div>';
+        
+        item._history.forEach(hist => {
+            const histDate = new Date(hist.date).toLocaleDateString();
+            const histVerdict = escapeHTML(hist.verdict || 'N/A');
+            const histDesc = formatCellContent(hist.description || 'N/A');
+            
+            let hVLower = (hist.verdict || 'N/A').toLowerCase().trim();
+            let hBadgeClass = 'bg-danger text-white border-danger';
+            if (hVLower.startsWith('tentative') || hVLower.includes('tentative')) hBadgeClass = 'bg-warning text-dark border-warning';
+            else if (hVLower.includes('no violation') || hVLower.includes('safe') || hVLower.includes('ok') || hVLower.includes('non violative')) hBadgeClass = 'bg-success text-white border-success';
+    
+            historyHtml += '<div class="text-muted small mb-1 mt-2 border-top pt-2">Verdict on ' + histDate + ': <span class="badge border ' + hBadgeClass + '">' + histVerdict + '</span></div>' +
+                '<div class="expand-card-body custom-scroll" style="font-size:0.9rem; max-height:100px;">' + histDesc + '</div>';
+        });
+        historyHtml += '</div>';
+    }
+
+    var expandBtn = '<button class="forge-btn forge-btn-ghost px-3 py-1" style="font-size:0.8rem;" onclick="openSlideExpandModal()"><i class="material-icons" style="font-size:16px; vertical-align:middle;">open_in_full</i> Expand</button>';
+    var deleteBtn = '';
+    if (['QA', 'TL', 'OPS'].includes(APP_TEAM)) {
+        deleteBtn = '<button class="forge-btn forge-btn-ghost text-danger border-danger px-3 py-1" style="font-size:0.8rem;" onclick="deleteDigitalSlide()"><i class="material-icons" style="font-size:16px; vertical-align:middle;">delete</i> Delete</button>';
+    }
+    
+    var actionFooter = '<div class="d-flex justify-content-end gap-2 mt-4 pt-3 border-top opacity-50" style="border-color:var(--border-glass)!important;">' + deleteBtn + expandBtn + '</div>';
+    let imgBadgeHtml = (item.bot || "").toLowerCase().includes('[img]') ? '<span class="img-badge ms-2" style="font-size: 0.6rem;"><i class="material-icons" style="font-size:12px;">image</i> MULTIMODAL</span>' : '';
+    
+    var html = '<div class="expand-verdict-banner ' + verdictCss + '" style="padding: 16px 24px;">' +
+               '<div class="fw-bold text-uppercase" style="font-size: 0.75rem; letter-spacing: 1px; opacity: 0.8; margin-bottom: 4px;">Alignment Verdict</div>' +
+               '<div style="font-size: 1.4rem; font-weight: 800; font-family: var(--font-display);">' + escapeHTML(vText) + imgBadgeHtml + '</div>' +
+               '</div>' +
+               '<div class="d-flex flex-column gap-3 mt-3">' +
+               
+               '<div class="expand-card prompt-card w-100" style="padding: 16px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 16px; box-shadow: inset 0 2px 10px rgba(59, 130, 246, 0.02);">' +
+               '<div class="expand-card-header" style="margin-bottom:10px; color: #60a5fa;"><i class="material-icons align-middle me-1">face</i> User Prompt Context</div>' +
+               '<div class="expand-card-body custom-scroll" style="max-height: 25vh;">' + formatCellContent(item.user) + '</div>' +
+               '</div>' +
+               
+               '<div class="expand-card bot-card w-100" style="padding: 16px; background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.2); border-radius: 16px; box-shadow: inset 0 2px 10px rgba(168, 85, 247, 0.02);">' +
+               '<div class="expand-card-header" style="margin-bottom:10px; color: #c084fc;">' +
+               '<div><i class="material-icons align-middle me-1">smart_toy</i> Model Bot Response</div>' +
+               '<button class="forge-btn forge-btn-ghost px-2 py-1 m-0" style="font-size:0.7rem;" onclick="openBotResponseExpanded()"><i class="material-icons" style="font-size:14px; vertical-align:middle;">fullscreen</i></button>' +
+               '</div>' +
+               '<div class="expand-card-body custom-scroll" style="max-height: 30vh;">' + formatCellContent(item.bot || 'N/A') + '</div>' +
+               '</div>' +
+               
+               '<div class="expand-card logic-card" style="padding: 16px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 16px; box-shadow: inset 0 2px 10px rgba(16, 185, 129, 0.02);">' +
+               '<div class="expand-card-header" style="margin-bottom:10px; color: #34d399;"><i class="material-icons align-middle me-1">gavel</i> Description</div>' +
+               '<div class="expand-card-body custom-scroll" style="font-size: 1rem; max-height: 30vh;">' + formatCellContent(item.description || 'N/A') + '</div>' +
+               '</div>' +
+               
+               historyHtml + actionFooter + '</div>';
+               
+    bodyEl.innerHTML = html;
+    document.getElementById('agentSideSheet').classList.add('open');
+}
+
+function openSlideExpandModal() {
+    var item = window.currentActiveSlide;
+    if(!item) return;
+    var vText = (item.verdict || "Review").trim();
+    var vLower = vText.toLowerCase();
+    
+    let verdictCss = 'violation';
+    if (vLower.startsWith('tentative') || vLower.includes('tentative')) verdictCss = 'warning';
+    else if(vLower.includes('no violation') || vLower.includes('safe') || vLower.includes('ok') || vLower.includes('non violative')) verdictCss = 'safe';
+
+    var histHtml = '';
+    if(item._history && Array.isArray(item._history) && item._history.length > 0) {
+        histHtml = '<div class="mt-4 p-4 border rounded" style="background:rgba(var(--primary-rgb),0.05); border-color:var(--border-glass)!important;">' +
+                   '<div class="expand-card-header"><div><i class="material-icons align-middle me-1">history</i> Policy Evolution</div></div>';
+                   
+        item._history.forEach(hist => {
+            let hVLower = (hist.verdict || 'N/A').toLowerCase().trim();
+            let hBadgeClass = 'bg-danger text-white border-danger';
+            if (hVLower.startsWith('tentative') || hVLower.includes('tentative')) hBadgeClass = 'bg-warning text-dark border-warning';
+            else if (hVLower.includes('no violation') || hVLower.includes('safe') || hVLower.includes('ok') || hVLower.includes('non violative')) hBadgeClass = 'bg-success text-white border-success';
+
+            histHtml += '<div class="text-muted small mb-1 mt-3 border-top pt-2" style="border-color: rgba(255,255,255,0.1) !important;">Verdict on ' + new Date(hist.date).toLocaleDateString() + ': <span class="badge border ' + hBadgeClass + '">' + escapeHTML(hist.verdict) + '</span></div>' +
+                        '<div class="expand-card-body custom-scroll" style="font-size:0.95rem;">' + formatCellContent(hist.description) + '</div>';
+        });
+        histHtml += '</div>';
+    }
+
+    var isQA = ['QA', 'TL', 'OPS'].includes(APP_TEAM);
+    var editToggleBtn = isQA ? '<button class="forge-btn forge-btn-ghost px-3 py-1 ms-auto" style="font-size:0.8rem;" onclick="toggleSlideEditMode()"><i class="material-icons" style="font-size:16px; vertical-align:middle;">edit</i> Edit InfoCard</button>' : '';
+    let imgBadgeHtml = (item.bot || "").toLowerCase().includes('[img]') ? '<span class="img-badge ms-2" style="font-size: 0.75rem;"><i class="material-icons" style="font-size:14px;">image</i> MULTIMODAL</span>' : '';
+    
+    var viewHtml = '<div id="slideViewMode">' +
+               '<div class="expand-verdict-banner ' + verdictCss + '">' +
+               '<div class="d-flex align-items-center justify-content-between">' +
+               '<div><div class="fw-bold text-uppercase" style="font-size: 0.85rem; letter-spacing: 1px; opacity: 0.8; margin-bottom: 6px;">Alignment Verdict</div>' +
+               '<div style="font-size: 1.8rem; font-weight: 800; font-family: var(--font-display);">' + escapeHTML(vText) + imgBadgeHtml + '</div></div>' +
+               editToggleBtn + '</div></div>' +
+               '<div class="row g-4 mt-1">' +
+               
+               '<div class="col-md-6 d-flex">' +
+               '<div class="expand-card prompt-card w-100" style="padding: 16px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 16px; box-shadow: inset 0 2px 10px rgba(59, 130, 246, 0.02);">' +
+               '<div class="expand-card-header" style="color: #60a5fa;"><div><i class="material-icons align-middle me-1">face</i> User Prompt Context</div></div>' +
+               '<div class="expand-card-body custom-scroll">' + formatCellContent(item.user) + '</div>' +
+               '</div></div>' +
+               
+               '<div class="col-md-6 d-flex">' +
+               '<div class="expand-card bot-card w-100" style="padding: 16px; background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.2); border-radius: 16px; box-shadow: inset 0 2px 10px rgba(168, 85, 247, 0.02);">' +
+               '<div class="expand-card-header" style="color: #c084fc;">' +
+               '<div><i class="material-icons align-middle me-1">smart_toy</i> Model Bot Response</div>' +
+               '<button class="forge-btn forge-btn-ghost px-2 py-1 m-0" style="font-size:0.7rem;" onclick="openBotResponseExpanded()"><i class="material-icons" style="font-size:14px; vertical-align:middle;">fullscreen</i></button>' +
+               '</div>' +
+               '<div class="expand-card-body custom-scroll">' + formatCellContent(item.bot || 'N/A') + '</div>' +
+               '</div></div>' +
+               
+               '<div class="col-12">' +
+               '<div class="expand-card logic-card" style="padding: 16px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 16px; box-shadow: inset 0 2px 10px rgba(16, 185, 129, 0.02);">' +
+               '<div class="expand-card-header" style="color: #34d399;"><div><i class="material-icons align-middle me-1">gavel</i> Description</div></div>' +
+               '<div class="expand-card-body custom-scroll" style="font-size: 1.1rem; line-height: 1.8;">' + formatCellContent(item.description || 'N/A') + '</div>' +
+               '</div></div>' +
+               
+               '<div class="col-12">' + histHtml + '</div>' +
+               '</div></div>';
+               
+    var editHtml = '';
+    if (isQA) {
+        var toolbarHtml = '<div class="formatting-toolbar d-flex gap-2 mb-3 sticky-top p-2 border rounded shadow-sm" style="background: var(--surface-glass); backdrop-filter: blur(10px); z-index: 5;">' +
+                          '<button class="btn-icon-sm" type="button" onclick="applyMarkdown(\'**\', \'**\')" title="Bold"><i class="material-icons" style="font-size:18px;">format_bold</i></button>' +
+                          '<button class="btn-icon-sm" type="button" onclick="applyMarkdown(\'__\', \'__\')" title="Underline"><i class="material-icons" style="font-size:18px;">format_underlined</i></button>' +
+                          '<button class="btn-icon-sm" type="button" style="color: var(--warning);" onclick="applyMarkdown(\'==\', \'==\')" title="Highlight"><i class="material-icons" style="font-size:18px;">highlight</i></button>' +
+                          '<div style="width:1px; background:var(--border-glass); margin: 0 4px;"></div>' +
+                          '<button class="btn-icon-sm" type="button" style="color: #ef4444;" onclick="applyMarkdown(\'[red]\', \'[/red]\')" title="Red Text"><i class="material-icons" style="font-size:18px;">palette</i></button>' +
+                          '<button class="btn-icon-sm" type="button" style="color: #10b981;" onclick="applyMarkdown(\'[green]\', \'[/green]\')" title="Green Text"><i class="material-icons" style="font-size:18px;">palette</i></button>' +
+                          '<button class="btn-icon-sm" type="button" style="color: #60a5fa;" onclick="applyMarkdown(\'[img]\', \'[/img]\')" title="Image Tag"><i class="material-icons" style="font-size:18px;">image</i></button>' +
+                          '</div>';
+        editHtml = '<div id="slideEditMode" style="display:none;">' +
+                   '<div class="d-flex align-items-center justify-content-between mb-3 pb-3 border-bottom" style="border-color:var(--border-glass)!important;">' +
+                   '<div class="fw-bold text-primary font-display" style="font-size:1.2rem;"><i class="material-icons align-middle me-2">edit_note</i> EDIT MODE</div>' +
+                   '<div class="d-flex gap-2">' +
+                   '<button class="forge-btn forge-btn-ghost px-3 py-1" onclick="toggleSlideEditMode()">CANCEL</button>' +
+                   '<button class="forge-btn forge-btn-primary px-3 py-1" id="saveInPlaceBtn" onclick="saveInPlaceEdit()"><i class="material-icons" style="font-size:16px;">save</i> SAVE CHANGES</button>' +
+                   '</div></div>' +
+                   toolbarHtml +
+                   '<div class="row g-3">' +
+                   '<div class="col-md-12"><label>Policy Verdict</label><input type="text" id="edit-verdict" class="glass-input m-0" value="' + escapeHTML(item.verdict) + '"></div>' +
+                   '<div class="col-md-6"><label>User Prompt Context</label><textarea id="edit-user" class="glass-input preview-box custom-scroll" style="min-height:150px;">' + escapeHTML(item.user) + '</textarea></div>' +
+                   '<div class="col-md-6"><label>Model Bot Response / Image Link</label><div class="d-flex align-items-center justify-content-between mb-1"><button class="forge-btn forge-btn-ghost px-2 py-1 m-0 ms-auto" style="font-size:0.7rem;" onclick="openBotResponseExpandedEdit(\'edit-bot\')"><i class="material-icons" style="font-size:14px; vertical-align:middle;">fullscreen</i> Expand</button></div><textarea id="edit-bot" class="glass-input preview-box custom-scroll" style="min-height:150px;">' + escapeHTML(item.bot || '') + '</textarea></div>' +
+                   '<div class="col-12"><label>Description</label><textarea id="edit-description" class="glass-input preview-box custom-scroll" style="min-height:150px;">' + escapeHTML(item.description || '') + '</textarea></div>' +
+                   '</div></div>';
+    }
+               
+    document.getElementById('slideExpandModalBody').innerHTML = viewHtml + editHtml;
+    closeAgentSideSheet();
+    slideExpandModalObj.show();
+}
+
+function toggleSlideEditMode() {
+    const viewDiv = document.getElementById('slideViewMode');
+    const editDiv = document.getElementById('slideEditMode');
+    if (!viewDiv || !editDiv) return;
+    if (editDiv.style.display === 'none') {
+        viewDiv.style.display = 'none';
+        editDiv.style.display = 'block';
+        ['edit-user', 'edit-bot', 'edit-description', 'edit-verdict'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('focus', () => lastFocusedTextarea = el);
+        });
+    } else {
+        editDiv.style.display = 'none';
+        viewDiv.style.display = 'block';
+    }
+}
+
+// FIX SECONDARIO: Anche l'Edit Manuale (Focus Mode) ora serializza l'history
+function saveInPlaceEdit() {
+    const item = window.currentActiveSlide;
+    if (!item) return;
+
+    const btn = document.getElementById('saveInPlaceBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> SAVING...';
+
+    const workflow = document.getElementById('agentWorkflowFilter')?.value || state.activeWorkflow || 'DEMO';
+    
+    const updatedData = {
+        verdict: document.getElementById('edit-verdict').value,
+        user: document.getElementById('edit-user').value,
+        bot: document.getElementById('edit-bot').value,
+        description: document.getElementById('edit-description').value
+    };
+    
+    if (item._history) {
+        updatedData._history = item._history;
+        updatedData.history_json = JSON.stringify(item._history);
+        updatedData.HISTORY_JSON = JSON.stringify(item._history);
+        updatedData.history = JSON.stringify(item._history);
+    }
+    
+    const originalData = {
+        user: item.user || "",
+        bot: item.bot || ""
+    };
+
+    google.script.run.withSuccessHandler(res => {
+        if (res.success) {
+            showToast(res.message, "success");
+            item.verdict = updatedData.verdict;
+            item.user = updatedData.user;
+            item.bot = updatedData.bot;
+            item.description = updatedData.description;
+            openSlideExpandModal();
+            loadAgentAlignments();
+            if (['QA', 'TL', 'OPS'].includes(APP_TEAM)) loadPublishedDbForQA();
+            if (typeof fetchKbMetrics === 'function') fetchKbMetrics();
+        } else {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="material-icons" style="font-size:16px;">save</i> SAVE CHANGES';
+            showToast(res.error, "error");
+        }
+    }).withFailureHandler(err => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="material-icons" style="font-size:16px;">save</i> SAVE CHANGES';
+        showToast(err.message, "error");
+    }).updateAlignment(item.date, workflow, updatedData, originalData);
+}
+
+function deleteDigitalSlide() {
+    var item = window.currentActiveSlide;
+    if(!item) return;
+    var workflow = document.getElementById('agentWorkflowFilter')?.value || state.activeWorkflow || 'DEMO';
+    
+    const originalData = {
+        user: item.user || "",
+        bot: item.bot || ""
+    };
+
+    if(confirm("Are you sure you want to permanently delete this InfoCard? This action cannot be undone.")) {
+        loader(true);
+        google.script.run.withSuccessHandler(function(res) {
+            loader(false);
+            if(res.success) {
+                showToast(res.message, "success");
+                closeAgentSideSheet();
+                slideExpandModalObj.hide();
+                loadAgentAlignments();
+                if (['QA', 'TL', 'OPS'].includes(APP_TEAM)) loadPublishedDbForQA();
+                if (typeof fetchKbMetrics === 'function') fetchKbMetrics();
+            } else showToast(res.error, "error");
+        }).deleteAlignment(item.date, workflow, originalData);
+    }
+}
+
+function closeAgentSideSheet() {
+    const el = document.getElementById('agentSideSheet');
+    if(el) el.classList.remove('open');
+    if (document.activeElement) document.activeElement.blur();
+}
+
+// === DECODER ENGINE PATCH ===
+function loadAgentAlignments() {
+    const workflow = document.getElementById('agentWorkflowFilter')?.value || state.activeWorkflow || 'DEMO';
+    document.getElementById('emptyGalleryState').style.display = 'block';
+    document.getElementById('alignmentLoader').style.display = 'inline-block';
+    document.getElementById('alignmentLoaderText').innerText = `Decrypting InfoCards...`;
+    document.getElementById('archiveContainer').style.display = 'none';
+    
+    google.script.run.withSuccessHandler(res => {
+        document.getElementById('emptyGalleryState').style.display = 'none';
+        if(res.success && res.data && res.data.length > 0) {
+            let grouped = {};
+
+            res.data.forEach(item => {
+                let rawText = normalizeTextExtreme(item.user) + normalizeTextExtreme(item.bot) + normalizeTextExtreme(item.channel || "General KB");
+                let key = generateHash32(rawText);
+                if(!grouped[key]) grouped[key] = [];
+                grouped[key].push(item);
+            });
+            
+            let processedData = [];
+            for(let key in grouped) {
+                let versions = grouped[key].sort((a, b) => new Date(b.date) - new Date(a.date));
+                let master = { ...versions[0] };
+                let historyArr = [];
+                
+                // 1. Estrazione Storico Legacy (Tramite Raggruppamento Righe Doppie)
+                for(let i = 1; i < versions.length; i++) {
+                    let old = versions[i];
+                    if((old.verdict||"").trim() !== (master.verdict||"").trim() || (old.description||"").trim() !== (master.description||"").trim()) {
+                        historyArr.push({ date: old.date, verdict: old.verdict, description: old.description });
+                    }
+                }
+                
+                // 2. Estrazione Storico Nuova Architettura (Scansione Colonna HISTORY_JSON)
+                let jsonStr = master.history_json || master.HISTORY_JSON || master.history || master.HISTORY;
+                if (!jsonStr && master._history && typeof master._history === 'string') jsonStr = master._history;
+                
+                if (jsonStr && typeof jsonStr === 'string' && (jsonStr.trim().startsWith('{') || jsonStr.trim().startsWith('['))) {
+                    try {
+                        let parsed = JSON.parse(jsonStr);
+                        if (Array.isArray(parsed)) {
+                            historyArr = historyArr.concat(parsed);
+                        } else if (parsed && typeof parsed === 'object') {
+                            historyArr.push(parsed); // Ripara salvataggi corrotti "a singolo oggetto"
+                        }
+                    } catch(e) {}
+                } else if (master._history && Array.isArray(master._history)) {
+                    historyArr = historyArr.concat(master._history);
+                }
+
+                // Pulizia duplicati (Previene collisioni tra Legacy e JSON)
+                let uniqueHistory = [];
+                let seenDates = new Set();
+                historyArr.forEach(h => {
+                    if (!seenDates.has(h.date)) {
+                        seenDates.add(h.date);
+                        uniqueHistory.push(h);
+                    }
+                });
+                
+                if (uniqueHistory.length > 0) {
+                    uniqueHistory.sort((a,b) => new Date(b.date) - new Date(a.date));
+                    master._history = uniqueHistory;
+                } else {
+                    delete master._history;
+                }
+                
+                processedData.push(master);
+            }
+            agentAlignmentsData = processedData.sort((a,b) => new Date(b.date) - new Date(a.date));
+            extractAndRenderVerdictDropdown(agentAlignmentsData);
+            filterDigitalSlides();
+        } else {
+            agentAlignmentsData = [];
+            document.getElementById('emptyGalleryState').style.display = 'block';
+            document.getElementById('alignmentLoader').style.display = 'none';
+            document.getElementById('alignmentLoaderText').innerHTML = `<i class="material-icons" style="font-size:48px; opacity:0.5">speaker_notes_off</i><h4 class="mt-3">No InfoCards Found</h4><p>QAs have not published any InfoCards for ${workflow} yet.</p>`;
+            
+            const countSpan = document.getElementById('agentSlideCount');
+            if (countSpan) countSpan.innerText = `0 InfoCards`;
+        }
+    }).fetchAlignments(workflow);
+}
+// ===================================
+
+function extractAndRenderVerdictDropdown(data) {
+    const sel = document.getElementById('agentVerdictDropdown');
+    if(!sel) return;
+    sel.innerHTML = `<option value="ALL">∞ All Policies</option>`;
+    const verdicts = new Set();
+    data.filter(d => (d.channel || 'General KB') === activeAgentChannel).forEach(d => {
+        let v = (d.verdict || 'Review').trim();
+        if (v.startsWith('Tentative: ')) {
+            v = v.substring(11).trim();
+        }
+        v.split(',').forEach(p => {
+            let clean = p.trim();
+            if (clean) verdicts.add(clean);
+        });
+    });
+    Array.from(verdicts).sort().forEach(v => {
+        const safeV = escapeHTML(v);
+        const selected = activeVerdictFilter === v ? 'selected' : '';
+        sel.innerHTML += `<option value="${safeV}" ${selected}>${safeV}</option>`;
+    });
+}
+
+function onVerdictFilterChange(val) {
+    activeVerdictFilter = val;
+    filterDigitalSlides();
+}
+
+function filterDigitalSlides() {
+    const q = document.getElementById('agentSearchInput') ? document.getElementById('agentSearchInput').value.toLowerCase() : "";
+    let filtered = agentAlignmentsData;
+    filtered = filtered.filter(d => (d.channel || 'General KB') === activeAgentChannel);
+    
+    const agentMediaFilterVal = document.getElementById('agentMediaFilter') ? document.getElementById('agentMediaFilter').value : 'ALL';
+    if(agentMediaFilterVal === 'IMAGE') {
+        filtered = filtered.filter(d => (d.bot || "").toLowerCase().includes('[img]'));
+    } else if(agentMediaFilterVal === 'TEXT') {
+        filtered = filtered.filter(d => !((d.bot || "").toLowerCase().includes('[img]')));
+    }
+    
+    if(q) {
+        const searchTokens = q.split(/\s+/).filter(t => t.length > 0);
+        filtered = filtered.filter(d => {
+            const combinedText = [d.user, d.bot, d.verdict, d.description].join(" ").toLowerCase();
+            return searchTokens.every(t => combinedText.includes(t));
+        });
+    }
+    
+    if(activeVerdictFilter !== 'ALL') {
+        filtered = filtered.filter(d => {
+            let v = (d.verdict || 'Review').trim();
+            if (v.startsWith('Tentative: ')) {
+                v = v.substring(11).trim();
+            }
+            const policies = v.split(',').map(p => p.trim());
+            return policies.includes(activeVerdictFilter);
+        });
+    }
+
+    const countSpan = document.getElementById('agentSlideCount');
+    if (countSpan) {
+        countSpan.innerText = `${filtered.length} InfoCard${filtered.length !== 1 ? 's' : ''}`;
+    }
+
+    const accordion = document.getElementById('monthlyAccordion');
+    if(!accordion) return;
+    accordion.innerHTML = '';
+    if(filtered.length === 0) {
+        document.getElementById('archiveContainer').style.display = 'none';
+        document.getElementById('emptyGalleryState').style.display = 'block';
+        document.getElementById('alignmentLoader').style.display = 'none';
+        document.getElementById('alignmentLoaderText').innerHTML = `<i class="material-icons" style="font-size:48px; opacity:0.4">search_off</i><h4 class="mt-3">No matches found</h4><p>Try clearing the filters or switch channel.</p>`;
+        return;
+    }
+    document.getElementById('emptyGalleryState').style.display = 'none';
+    document.getElementById('archiveContainer').style.display = 'block';
+
+    const chronoTree = {};
+    filtered.forEach(item => {
+        const itemDate = new Date(item.date || new Date());
+        const monthYearStr = itemDate.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+        const firstDayIdx = new Date(itemDate.getFullYear(), itemDate.getMonth(), 1).getDay();
+        const weekNum = Math.ceil((itemDate.getDate() + firstDayIdx) / 7);
+        const weekStr = `Week ${weekNum}`;
+
+        if (!chronoTree[monthYearStr]) chronoTree[monthYearStr] = {};
+        if (!chronoTree[monthYearStr][weekStr]) chronoTree[monthYearStr][weekStr] = [];
+        chronoTree[monthYearStr][weekStr].push(item);
+    });
+
+    Object.keys(chronoTree).forEach((monthYear, mIdx) => {
+        const monthItem = document.createElement('div');
+        monthItem.className = 'accordion-item';
+        const isMonthOpen = mIdx === 0 ? 'show' : '';
+        const isMonthCollapsed = mIdx === 0 ? '' : 'collapsed';
+
+        let weeklyAccordionHtml = `<div class="accordion accordion-glass weekly-accordion-wrapper" id="weekly-acc-${mIdx}">`;
+        const weeks = Object.keys(chronoTree[monthYear]).sort((a,b) => b.localeCompare(a));
+        
+        weeks.forEach((weekStr, wIdx) => {
+            const isWeekOpen = (mIdx === 0 && wIdx === 0) ? 'show' : '';
+            const isWeekCollapsed = (mIdx === 0 && wIdx === 0) ? '' : 'collapsed';
+            weeklyAccordionHtml += `
+                <div class="accordion-item">
+                    <h3 class="accordion-header" id="head-wk-${mIdx}-${wIdx}">
+                        <button class="accordion-button ${isWeekCollapsed}" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-wk-${mIdx}-${wIdx}">
+                            <i class="material-icons me-2" style="font-size:18px; opacity:0.7">date_range</i> ${weekStr}
+                        </button>
+                    </h3>
+                    <div id="collapse-wk-${mIdx}-${wIdx}" class="accordion-collapse collapse ${isWeekOpen}">
+                        <div class="accordion-body flex-column d-flex" style="gap: 8px;" id="body-wk-${mIdx}-${wIdx}"></div>
+                    </div>
+                </div>`;
+        });
+        weeklyAccordionHtml += `</div>`;
+
+        monthItem.innerHTML = `
+            <h2 class="accordion-header" id="head-mo-${mIdx}">
+                <button class="accordion-button ${isMonthCollapsed}" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-mo-${mIdx}">
+                   <i class="material-icons me-2" style="font-size:20px;">calendar_month</i> ${monthYear}
+                </button>
+            </h2>
+            <div id="collapse-mo-${mIdx}" class="accordion-collapse collapse ${isMonthOpen}">
+                <div class="accordion-body">${weeklyAccordionHtml}</div>
+            </div>`;
+        accordion.appendChild(monthItem);
+
+        weeks.forEach((weekStr, wIdx) => {
+            const container = document.getElementById(`body-wk-${mIdx}-${wIdx}`);
+            
+            chronoTree[monthYear][weekStr].sort((a, b) => {
+                const getRank = (v) => {
+                    const vLower = (v || "").toLowerCase().trim();
+                    const isSafeTerm = vLower.includes('no violation') || vLower.includes('safe') || vLower.includes('ok') || vLower.includes('non violative');
+                    const isTentative = vLower.startsWith('tentative') || vLower.includes('tentative');
+                    
+                    if (!isTentative && !isSafeTerm) return 1; 
+                    if (isTentative && !isSafeTerm) return 2;  
+                    if (isTentative && isSafeTerm) return 3;   
+                    return 4;                                  
+                };
+
+                const rankA = getRank(a.verdict);
+                const rankB = getRank(b.verdict);
+
+                if (rankA !== rankB) return rankA - rankB;
+                
+                const vA = (a.verdict || "").trim();
+                const vB = (b.verdict || "").trim();
+                if (vA !== vB) return vA.localeCompare(vB);
+                
+                return new Date(b.date || 0) - new Date(a.date || 0);
+            });
+
+            chronoTree[monthYear][weekStr].forEach(item => {
+                const tmpl = document.getElementById('compact-case-row-tmpl');
+                const clone = tmpl.content.cloneNode(true);
+                const rowEl = clone.querySelector('.compact-case-item');
+                rowEl.onclick = () => openAgentSideSheet(item);
+                clone.querySelector('.compact-case-date').textContent = new Date(item.date || new Date()).toLocaleDateString();
+                
+                const badge = clone.querySelector('.compact-case-badge');
+                let vText = (item.verdict || "Review").trim();
+                let vLower = vText.toLowerCase();
+                badge.textContent = vText;
+                
+                if (vLower.startsWith('tentative') || vLower.includes('tentative')) badge.classList.add('warning');
+                else if(vLower.includes('no violation') || vLower.includes('safe') || vLower.includes('ok') || vLower.includes('non violative')) badge.classList.add('safe');
+                else badge.classList.add('violation');
+
+                if((item.bot || "").toLowerCase().includes('[img]')) {
+                    const badgeMeta = clone.querySelector('.compact-case-meta');
+                    const imgBadge = document.createElement('span');
+                    imgBadge.className = 'img-badge';
+                    imgBadge.innerHTML = '<i class="material-icons" style="font-size:12px;">image</i> MULTIMODAL';
+                    badgeMeta.appendChild(imgBadge);
+                }
+                clone.querySelector('.compact-case-preview-text').textContent = item.user || "N/A Context Prompt";
+                container.appendChild(clone);
+            });
+        });
+    });
+}
+</script>

@@ -1,0 +1,505 @@
+<script>
+/**
+* =========================================
+* FLOWPILOT - WORKFLOW BUILDER
+* Module: Neural Canvas Physics & SVG Routing
+* Architecture: Vanilla JS, Directed Acyclic Graph (DAG)
+* Feature: Multi-Tenant Workspace Isolation (QA vs OPS) & Standardized Naming
+* =========================================
+*/
+
+const OpsCanvas = {
+state: {
+nodes: [],
+edges: [],
+camera: { x: 0, y: 0, z: 1 },
+isDragging: false,
+dragType: null,
+targetId: null,
+startX: 0,
+startY: 0,
+tempEdge: null,
+hoveredPort: null,
+activeConfigNode: null
+},
+nodeTypes: {
+'TRIGGER_MANUAL': { label: 'Manual Trigger', icon: 'ads_click', color: '#10b981', hasIn: false },
+'TRIGGER_CRON': { label: 'Time Trigger', icon: 'schedule', color: '#10b981', hasIn: false },
+'TRIGGER_GMAIL_POLLER': { label: 'Gmail Poller', icon: 'mark_email_unread', color: '#10b981', hasIn: false },
+'ACTION_EMAIL': { label: 'Send Email', icon: 'mail', color: '#3b82f6', hasIn: true },
+'ACTION_SHEET': { label: 'Sheet Append', icon: 'table_rows', color: '#3b82f6', hasIn: true },
+'ACTION_PULSE': { label: 'Pulse Broadcast', icon: 'campaign', color: '#3b82f6', hasIn: true },
+'ACTION_STUDIO_BATCH': { label: 'Studio Batch', icon: 'mark_email_read', color: '#3b82f6', hasIn: true },
+'LOGIC_IF': { label: 'IF Condition', icon: 'call_split', color: '#8b5cf6', hasIn: true },
+'LOGIC_REGEX_PARSER': { label: 'Regex Parser', icon: 'manage_search', color: '#8b5cf6', hasIn: true }
+},
+dom: {
+container: null,
+nodesLayer: null,
+edgesLayer: null,
+svgGroup: null,
+debugPanel: null
+},
+
+getWorkspace: function() {
+const team = window.APP_TEAM || 'OPS';
+return ['QA', 'TL', 'OPS'].includes(team) ? team : 'OPS';
+},
+debugLog: function(msg) {
+console.log("[WorkflowBuilder] " + msg);
+if (this.dom.debugPanel) {
+this.dom.debugPanel.innerHTML += msg + "<br>";
+this.dom.debugPanel.scrollTop = this.dom.debugPanel.scrollHeight;
+}
+},
+init: function() {
+let view = document.getElementById('view-ops-canvas');
+if (!view) {
+view = document.createElement('div');
+view.id = 'view-ops-canvas';
+view.className = 'view-section';
+view.style.cssText = 'position:relative; width:100%; height:100vh; overflow:hidden; background:var(--bg-deep); background-image: radial-gradient(rgba(255,255,255,0.05) 1px, transparent 1px); background-size: 20px 20px;';
+const mainContent = document.querySelector('.main-content') || document.body;
+mainContent.appendChild(view);
+}
+view.innerHTML = '<svg id="canvas-edges" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:1;"></svg>' +
+'<div id="canvas-nodes" style="position:absolute; top:0; left:0; width:100%; height:100%; transform-origin:0 0; z-index:2; pointer-events:none;"></div>' +
+'<div id="canvas-ui" style="position:absolute; top:20px; left:20px; z-index:10; display:flex; align-items:center; gap:10px; background:rgba(15,23,42,0.8); padding:8px; border-radius:12px; border:1px solid var(--border-glass); backdrop-filter:blur(10px);">' +
+'<select id="canvas-node-type" class="glass-input m-0" style="width:auto; min-width:180px; height:38px; border-radius:50px; padding:0 32px 0 16px; cursor:pointer; font-weight:600;">' +
+'<optgroup label="Triggers (Green)">' +
+'<option value="TRIGGER_MANUAL">Manual Trigger</option>' +
+'<option value="TRIGGER_CRON">Time Trigger</option>' +
+'<option value="TRIGGER_GMAIL_POLLER">Gmail Poller</option>' +
+'</optgroup>' +
+'<optgroup label="Actions (Blue)">' +
+'<option value="ACTION_EMAIL">Send Email</option>' +
+'<option value="ACTION_SHEET">Sheet Append</option>' +
+'<option value="ACTION_PULSE">Pulse Broadcast</option>' +
+'<option value="ACTION_STUDIO_BATCH">Studio Batch</option>' +
+'</optgroup>' +
+'<optgroup label="Logic (Purple)">' +
+'<option value="LOGIC_IF">IF Condition</option>' +
+'<option value="LOGIC_REGEX_PARSER">Regex Parser</option>' +
+'</optgroup>' +
+'</select>' +
+'<button class="forge-btn forge-btn-primary m-0" onclick="OpsCanvas.addNode()" style="height:38px; border-radius:50px; padding:0 20px;"><i class="material-icons" style="font-size:16px;">add</i> Add Node</button>' +
+'<div style="width:1px; height:24px; background:var(--border-glass); margin:0 4px;"></div>' +
+'<button class="forge-btn forge-btn-secondary m-0" onclick="OpsCanvas.saveState()" style="height:38px; border-radius:50px; padding:0 20px;"><i class="material-icons" style="font-size:16px;">save</i> Save Flow</button>' +
+'<button class="forge-btn forge-btn-ghost m-0" onclick="OpsCanvas.resetCamera()" style="height:38px; border-radius:50px; padding:0 20px;"><i class="material-icons" style="font-size:16px;">my_location</i> Center</button>' +
+'<div style="width:1px; height:24px; background:var(--border-glass); margin:0 4px;"></div>' +
+'<button class="forge-btn forge-btn-success m-0" onclick="OpsCanvas.runWorkflow()" style="height:38px; font-weight:bold; letter-spacing:1px; border-radius:50px; padding:0 24px;"><i class="material-icons" style="font-size:16px;">play_arrow</i> RUN</button>' +
+'<div style="width:1px; height:24px; background:var(--border-glass); margin:0 4px;"></div>' +
+'<button class="forge-btn forge-btn-ghost m-0" onclick="OpsCanvas.startDaemon()" style="height:38px; border-radius:50px; padding:0 16px;" title="Enable Background Automation"><i class="material-icons" style="font-size:16px; color:#10b981;">timer</i></button>' +
+'<button class="forge-btn forge-btn-ghost m-0" onclick="OpsCanvas.stopDaemon()" style="height:38px; border-radius:50px; padding:0 16px;" title="Disable Background Automation"><i class="material-icons" style="font-size:16px; color:#ef4444;">timer_off</i></button>' +
+'</div>' +
+'<div id="ops-debug-panel" style="position:absolute; bottom:20px; right:20px; width:400px; height:220px; background:rgba(0,0,0,0.85); color:#10b981; font-family:monospace; font-size:11px; padding:12px; overflow-y:auto; z-index:9999; border:1px solid #10b981; pointer-events:auto; border-radius:8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">' +
+'<div style="border-bottom:1px solid #10b981; padding-bottom:5px; margin-bottom:10px; font-weight:bold;">WORKFLOW BUILDER CONSOLE <span style="color:#f59e0b;">[WORKSPACE: <span id="ops-workspace-label"></span>]</span></div>' +
+'</div>';
+this.dom.container = view;
+this.dom.nodesLayer = document.getElementById('canvas-nodes');
+this.dom.edgesLayer = document.getElementById('canvas-edges');
+this.dom.debugPanel = document.getElementById('ops-debug-panel');
+const workspaceLabel = document.getElementById('ops-workspace-label');
+if (workspaceLabel) workspaceLabel.innerText = this.getWorkspace();
+this.bindEvents();
+this.loadState();
+this.debugLog(`✅ Workflow Builder Initialized (Workspace: ${this.getWorkspace()})`);
+},
+
+startDaemon: function() {
+if (!confirm("Enable background automation? This activates all Time Triggers for your workspace.")) return;
+this.debugLog("⏳ Requesting Engine activation...");
+if (typeof window.loader === 'function') window.loader(true);
+google.script.run.withSuccessHandler(function(res) {
+if (typeof window.loader === 'function') window.loader(false);
+if (res.success) {
+OpsCanvas.debugLog("✅ " + res.message);
+if (typeof window.showToast === 'function') window.showToast(res.message, "success");
+} else {
+OpsCanvas.debugLog("❌ Error: " + res.error);
+if (typeof window.showToast === 'function') window.showToast(res.error, "error");
+}
+}).withFailureHandler(function(err) {
+if (typeof window.loader === 'function') window.loader(false);
+OpsCanvas.debugLog("❌ Network Error: " + err.message);
+}).installMasterDaemon();
+},
+
+stopDaemon: function() {
+if (!confirm("Disable background automation? This will pause all scheduled executions for your workspace.")) return;
+this.debugLog("⏳ Requesting Engine deactivation...");
+if (typeof window.loader === 'function') window.loader(true);
+google.script.run.withSuccessHandler(function(res) {
+if (typeof window.loader === 'function') window.loader(false);
+if (res.success) {
+OpsCanvas.debugLog("🛑 " + res.message);
+if (typeof window.showToast === 'function') window.showToast(res.message, "success");
+} else {
+OpsCanvas.debugLog("❌ Error: " + res.error);
+if (typeof window.showToast === 'function') window.showToast(res.error, "error");
+}
+}).withFailureHandler(function(err) {
+if (typeof window.loader === 'function') window.loader(false);
+OpsCanvas.debugLog("❌ Network Error: " + err.message);
+}).removeMasterDaemon();
+},
+
+getMousePos: function(e) {
+if (!this.dom.container) return { x: e.clientX, y: e.clientY };
+const rect = this.dom.container.getBoundingClientRect();
+return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+},
+checkPortCollision: function(canvasMouseX, canvasMouseY) {
+const z = this.state.camera.z;
+const cx = this.state.camera.x;
+const cy = this.state.camera.y;
+const tolerance = 45;
+
+for (let i = 0; i < this.state.nodes.length; i++) {
+const node = this.state.nodes[i];
+const meta = this.nodeTypes[node.type];
+const renderedNodeX = cx + (node.x * z);
+const renderedNodeY = cy + (node.y * z);
+const inX = renderedNodeX;
+const inY = renderedNodeY + (65 * z);
+const outX = renderedNodeX + (260 * z);
+const outY = renderedNodeY + (65 * z);
+
+if (meta && meta.hasIn) {
+if (Math.hypot(canvasMouseX - inX, canvasMouseY - inY) <= tolerance) {
+return { nodeId: node.id, type: 'in', absX: inX, absY: inY };
+}
+}
+if (Math.hypot(canvasMouseX - outX, canvasMouseY - outY) <= tolerance) {
+return { nodeId: node.id, type: 'out', absX: outX, absY: outY };
+}
+}
+return null;
+},
+bindEvents: function() {
+const container = this.dom.container;
+container.addEventListener('mousedown', function(e) {
+const pos = OpsCanvas.getMousePos(e);
+const portHitbox = e.target.closest('.port-hitbox');
+if (portHitbox) {
+e.preventDefault();
+OpsCanvas.state.isDragging = true;
+OpsCanvas.state.dragType = 'edge';
+OpsCanvas.state.tempEdge = {
+fromNode: portHitbox.dataset.node,
+fromPort: portHitbox.dataset.type,
+x2: pos.x,
+y2: pos.y
+};
+OpsCanvas.state.hoveredPort = null;
+} else if (e.target.closest('.canvas-node') && !e.target.closest('button') && !e.target.closest('select') && !e.target.closest('input')) {
+e.preventDefault();
+OpsCanvas.state.isDragging = true;
+OpsCanvas.state.dragType = 'node';
+OpsCanvas.state.targetId = e.target.closest('.canvas-node').dataset.id;
+OpsCanvas.state.startX = pos.x;
+OpsCanvas.state.startY = pos.y;
+} else if (!e.target.closest('button') && !e.target.closest('select') && !e.target.closest('.canvas-node') && !e.target.closest('#ops-debug-panel')) {
+e.preventDefault();
+OpsCanvas.state.isDragging = true;
+OpsCanvas.state.dragType = 'pan';
+OpsCanvas.state.startX = pos.x - OpsCanvas.state.camera.x;
+OpsCanvas.state.startY = pos.y - OpsCanvas.state.camera.y;
+container.style.cursor = 'grabbing';
+}
+});
+window.addEventListener('mousemove', function(e) {
+const pos = OpsCanvas.getMousePos(e);
+if (!OpsCanvas.state.isDragging || OpsCanvas.state.dragType === 'edge') {
+const visuals = document.querySelectorAll('.port-visual');
+for (let i = 0; i < visuals.length; i++) { visuals[i].style.transform = 'scale(1)'; }
+const hit = OpsCanvas.checkPortCollision(pos.x, pos.y);
+if (hit) {
+const hitPortEl = document.querySelector('.port-hitbox[data-node="' + hit.nodeId + '"][data-type="' + hit.type + '"] .port-visual');
+if (hitPortEl) hitPortEl.style.transform = 'scale(1.5)';
+}
+}
+
+if (!OpsCanvas.state.isDragging) return;
+if (OpsCanvas.state.dragType === 'pan') {
+OpsCanvas.state.camera.x = pos.x - OpsCanvas.state.startX;
+OpsCanvas.state.camera.y = pos.y - OpsCanvas.state.startY;
+OpsCanvas.applyCamera();
+} else if (OpsCanvas.state.dragType === 'node') {
+const node = OpsCanvas.state.nodes.find(function(n) { return n.id === OpsCanvas.state.targetId; });
+if (node) {
+const dx = (pos.x - OpsCanvas.state.startX) / OpsCanvas.state.camera.z;
+const dy = (pos.y - OpsCanvas.state.startY) / OpsCanvas.state.camera.z;
+node.x += dx;
+node.y += dy;
+OpsCanvas.state.startX = pos.x;
+OpsCanvas.state.startY = pos.y;
+const nodeEl = document.querySelector('.canvas-node[data-id="' + node.id + '"]');
+if (nodeEl) {
+nodeEl.style.left = node.x + 'px';
+nodeEl.style.top = node.y + 'px';
+}
+OpsCanvas.renderEdges();
+}
+} else if (OpsCanvas.state.dragType === 'edge' && OpsCanvas.state.tempEdge) {
+const hit = OpsCanvas.checkPortCollision(pos.x, pos.y);
+if (hit) {
+OpsCanvas.state.tempEdge.x2 = hit.absX;
+OpsCanvas.state.tempEdge.y2 = hit.absY;
+OpsCanvas.state.hoveredPort = hit;
+} else {
+OpsCanvas.state.tempEdge.x2 = pos.x;
+OpsCanvas.state.tempEdge.y2 = pos.y;
+OpsCanvas.state.hoveredPort = null;
+}
+OpsCanvas.renderEdges();
+}
+});
+window.addEventListener('mouseup', function(e) {
+if (OpsCanvas.state.dragType === 'edge' && OpsCanvas.state.tempEdge) {
+const pos = OpsCanvas.getMousePos(e);
+const hit = OpsCanvas.state.hoveredPort || OpsCanvas.checkPortCollision(pos.x, pos.y);
+if (hit) {
+const fNode = OpsCanvas.state.tempEdge.fromNode;
+const fPort = OpsCanvas.state.tempEdge.fromPort;
+const tNode = hit.nodeId;
+const tPort = hit.type;
+
+if (fNode === tNode) {
+if(typeof window.showToast === 'function') window.showToast("Cannot connect a node to itself.", "warning");
+} else if (fPort === tPort) {
+if(typeof window.showToast === 'function') window.showToast("Cannot connect ports of the same type.", "warning");
+} else {
+const src = fPort === 'out' ? fNode : tNode;
+const tgt = fPort === 'in' ? fNode : tNode;
+const exists = OpsCanvas.state.edges.some(function(edge){
+return edge.source === src && edge.target === tgt;
+});
+if (!exists) {
+OpsCanvas.state.edges.push({ id: 'EDGE_' + Date.now(), source: src, target: tgt });
+}
+}
+}
+}
+const visuals = document.querySelectorAll('.port-visual');
+for (let i = 0; i < visuals.length; i++) { visuals[i].style.transform = 'scale(1)'; }
+OpsCanvas.state.isDragging = false;
+OpsCanvas.state.dragType = null;
+OpsCanvas.state.targetId = null;
+OpsCanvas.state.tempEdge = null;
+OpsCanvas.state.hoveredPort = null;
+container.style.cursor = 'default';
+OpsCanvas.renderEdges();
+});
+container.addEventListener('wheel', function(e) {
+if (e.target.closest('#ops-debug-panel')) return;
+e.preventDefault();
+const pos = OpsCanvas.getMousePos(e);
+const zoomIntensity = 0.1;
+const wheel = e.deltaY < 0 ? 1 : -1;
+let newZoom = OpsCanvas.state.camera.z * Math.exp(wheel * zoomIntensity);
+newZoom = Math.min(Math.max(newZoom, 0.15), 3);
+OpsCanvas.state.camera.x -= pos.x / OpsCanvas.state.camera.z * (newZoom - OpsCanvas.state.camera.z);
+OpsCanvas.state.camera.y -= pos.y / OpsCanvas.state.camera.z * (newZoom - OpsCanvas.state.camera.z);
+OpsCanvas.state.camera.z = newZoom;
+OpsCanvas.applyCamera();
+}, { passive: false });
+},
+applyCamera: function() {
+if (!this.dom.nodesLayer) return;
+const x = this.state.camera.x;
+const y = this.state.camera.y;
+const z = this.state.camera.z;
+this.dom.nodesLayer.style.transform = 'translate(' + x + 'px, ' + y + 'px) scale(' + z + ')';
+const svgGroup = document.getElementById('canvas-svg-group');
+if (svgGroup) {
+svgGroup.setAttribute('transform', 'translate(' + x + ',' + y + ') scale(' + z + ')');
+}
+},
+loadState: function() {
+if (typeof window.loader === 'function') window.loader(true);
+const workspace = this.getWorkspace();
+google.script.run.withSuccessHandler(function(res) {
+if (typeof window.loader === 'function') window.loader(false);
+if (res && res.success && res.data) {
+OpsCanvas.state.nodes = res.data.nodes || [];
+OpsCanvas.state.edges = res.data.edges || [];
+}
+OpsCanvas.renderNodes();
+OpsCanvas.renderEdges();
+OpsCanvas.applyCamera();
+}).withFailureHandler(function(err) {
+if (typeof window.loader === 'function') window.loader(false);
+if (typeof window.showToast === 'function') window.showToast("Failed to load Workflow: " + err.message, "error");
+}).loadCanvasState(workspace);
+},
+saveState: function() {
+const payload = JSON.stringify({ nodes: this.state.nodes, edges: this.state.edges });
+const workspace = this.getWorkspace();
+google.script.run.withSuccessHandler(function(res) {
+if (res.success) {
+OpsCanvas.debugLog(`💾 Workflow synchronized successfully with the Database (${workspace}).`);
+} else {
+if (typeof window.showToast === 'function') window.showToast(res.error, "error");
+}
+}).saveCanvasState(payload, workspace);
+},
+runWorkflow: function() {
+const triggers = this.state.nodes.filter(function(n) { return n.type === 'TRIGGER_MANUAL'; });
+if (triggers.length === 0) {
+if (typeof window.showToast === 'function') window.showToast("Execution aborted: No 'Manual Trigger' node found in Workflow.", "error");
+this.debugLog("❌ Execution aborted. Missing Trigger.");
+return;
+}
+const startNodeId = triggers[0].id;
+const workspace = this.getWorkspace();
+this.debugLog(`⏳ Compiling flow from ${startNodeId} [Workspace: ${workspace}]...`);
+const payload = JSON.stringify({ nodes: this.state.nodes, edges: this.state.edges });
+google.script.run.withSuccessHandler(function(res) {
+if (res.success) {
+OpsCanvas.debugLog(`🚀 Starting V8 Backend Engine...`);
+if (typeof window.showToast === 'function') window.showToast("Running Automation...", "info");
+google.script.run.withSuccessHandler(function(execRes) {
+if (execRes.success) {
+OpsCanvas.debugLog("✅ Execution completed.");
+execRes.log.forEach(function(l) { OpsCanvas.debugLog(" ↳ " + l); });
+if (typeof window.showToast === 'function') window.showToast("Automation executed successfully!", "success");
+} else {
+OpsCanvas.debugLog("❌ Backend Error: " + execRes.error);
+if (typeof window.showToast === 'function') window.showToast("Execution Failed: " + execRes.error, "error");
+}
+}).withFailureHandler(function(err) {
+OpsCanvas.debugLog("❌ Network Error: " + err.message);
+}).executeManualWorkflow(startNodeId, null, workspace);
+} else {
+OpsCanvas.debugLog("❌ Failed to synchronize map before execution.");
+}
+}).saveCanvasState(payload, workspace);
+},
+addNode: function() {
+const selector = document.getElementById('canvas-node-type');
+const nodeType = selector ? selector.value : 'ACTION_EMAIL';
+const meta = this.nodeTypes[nodeType];
+const id = 'NODE_' + Date.now();
+const cx = (-this.state.camera.x + window.innerWidth / 2) / this.state.camera.z;
+const cy = (-this.state.camera.y + window.innerHeight / 2) / this.state.camera.z;
+this.state.nodes.push({
+id: id,
+type: nodeType,
+x: cx,
+y: cy,
+title: meta.label,
+parameters: {}
+});
+this.renderNodes();
+this.renderEdges();
+},
+deleteNode: function(id) {
+if (!confirm("Are you sure you want to delete this automation node?")) return;
+this.state.nodes = this.state.nodes.filter(function(n) { return n.id !== id; });
+this.state.edges = this.state.edges.filter(function(e) { return e.source !== id && e.target !== id; });
+if (this.state.activeConfigNode === id) {
+this.state.activeConfigNode = null;
+if (typeof window.closeNodeConfig === 'function') window.closeNodeConfig();
+}
+this.renderNodes();
+this.renderEdges();
+},
+editNode: function(id) {
+this.state.activeConfigNode = id;
+if (typeof window.openNodeConfig === 'function') {
+window.openNodeConfig(id);
+} else {
+console.warn("openNodeConfig UI not yet implemented.");
+}
+},
+deleteEdge: function(edgeId) {
+this.state.edges = this.state.edges.filter(function(e) { return e.id !== edgeId; });
+this.renderEdges();
+},
+renderNodes: function() {
+if (!this.dom.nodesLayer) return;
+this.dom.nodesLayer.innerHTML = '';
+this.state.nodes.forEach(function(node) {
+const el = document.createElement('div');
+const meta = OpsCanvas.nodeTypes[node.type] || OpsCanvas.nodeTypes['ACTION_EMAIL'];
+el.className = 'canvas-node';
+el.dataset.id = node.id;
+const isSelected = OpsCanvas.state.activeConfigNode === node.id;
+const borderStyle = isSelected ? `2px solid ${meta.color}` : `1px solid var(--border-solid)`;
+const glow = isSelected ? `box-shadow: 0 0 20px ${meta.color}40, 0 10px 30px rgba(0,0,0,0.5);` : `box-shadow: 0 10px 30px rgba(0,0,0,0.5);`;
+el.style.cssText = `pointer-events:auto; position:absolute; left:${node.x}px; top:${node.y}px; width:260px; height:130px; box-sizing:border-box; background:rgba(30, 41, 59, 0.95); border:${borderStyle}; border-radius:12px; padding:0; color:#fff; cursor:grab; ${glow} backdrop-filter:blur(10px); user-select:none; display:flex; flex-direction:column; z-index:5; transition: box-shadow 0.2s ease;`;
+let html = `<div style="background: linear-gradient(90deg, ${meta.color}20, transparent); border-bottom:1px solid rgba(255,255,255,0.05); padding:10px 16px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0; border-top-left-radius:11px; border-top-right-radius:11px;">
+<div style="display:flex; align-items:center; gap:8px;">
+<i class="material-icons" style="font-size:16px; color:${meta.color}">${meta.icon}</i>
+<span style="font-weight:700; font-size:14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px;">${node.title}</span>
+</div>
+<span style="color:var(--text-muted); font-size:16px; cursor:pointer; padding:4px; transition:color 0.2s;" onmouseover="this.style.color='var(--primary)'" onmouseout="this.style.color='var(--text-muted)'" onclick="OpsCanvas.editNode('${node.id}')"><i class="material-icons" style="font-size:16px;">settings</i></span>
+</div>`;
+html += `<div style="padding:12px 16px; flex-grow:1; display:flex; flex-direction:column;">`;
+html += `<div style="font-size:11px; color:var(--text-muted); font-family:monospace; margin-bottom:auto;">ID: ${node.id.split('_')[1]}</div>`;
+html += `<div style="display:flex; justify-content:flex-end;">
+<button style="background:transparent; border:none; color:var(--error); cursor:pointer; font-size:11px; display:flex; align-items:center; gap:4px; padding:0;" onclick="OpsCanvas.deleteNode('${node.id}')"><i class="material-icons" style="font-size:14px;">delete</i> Delete</button>
+</div></div>`;
+if (meta.hasIn) {
+html += `<div class="port-hitbox" data-node="${node.id}" data-type="in" style="pointer-events:all; position:absolute; left:-14px; top:65px; width:28px; height:28px; display:flex; align-items:center; justify-content:center; cursor:crosshair; z-index:10; transform:translateY(-50%);">
+<div class="port-visual" style="width:16px; height:16px; background:var(--primary); border-radius:50%; border:3px solid var(--bg-deep); transition:transform 0.2s; box-shadow:0 0 10px rgba(59,130,246,0.5); pointer-events:none;"></div></div>`;
+}
+html += `<div class="port-hitbox" data-node="${node.id}" data-type="out" style="pointer-events:all; position:absolute; right:-14px; top:65px; width:28px; height:28px; display:flex; align-items:center; justify-content:center; cursor:crosshair; z-index:10; transform:translateY(-50%);">
+<div class="port-visual" style="width:16px; height:16px; background:var(--warning); border-radius:50%; border:3px solid var(--bg-deep); transition:transform 0.2s; box-shadow:0 0 10px rgba(245,158,11,0.5); pointer-events:none;"></div></div>`;
+el.innerHTML = html;
+el.addEventListener('dblclick', function(e) {
+if(!e.target.closest('.port-hitbox') && !e.target.closest('button')) {
+OpsCanvas.editNode(node.id);
+}
+});
+
+OpsCanvas.dom.nodesLayer.appendChild(el);
+});
+},
+renderEdges: function() {
+if (!this.dom.edgesLayer) return;
+let svgHtml = '<g id="canvas-svg-group" transform="translate(' + this.state.camera.x + ',' + this.state.camera.y + ') scale(' + this.state.camera.z + ')">';
+this.state.edges.forEach(function(edge) {
+const n1 = OpsCanvas.state.nodes.find(function(n) { return n.id === edge.source; });
+const n2 = OpsCanvas.state.nodes.find(function(n) { return n.id === edge.target; });
+if (n1 && n2) {
+const x1 = n1.x + 260;
+const y1 = n1.y + 65;
+const x2 = n2.x;
+const y2 = n2.y + 65;
+const cp = Math.max(Math.abs(x2 - x1) * 0.5, 50);
+const d = 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + cp) + ' ' + y1 + ', ' + (x2 - cp) + ' ' + y2 + ', ' + x2 + ' ' + y2;
+svgHtml += '<path d="' + d + '" fill="none" stroke="rgba(148, 163, 184, 0.8)" stroke-width="5" style="transition: stroke 0.2s; pointer-events:stroke; cursor:pointer;" onmouseover="this.setAttribute(\'stroke\', \'#ef4444\')" onmouseout="this.setAttribute(\'stroke\', \'rgba(148, 163, 184, 0.8)\')" onclick="OpsCanvas.deleteEdge(\'' + edge.id + '\')" title="Delete Edge" />';
+svgHtml += '<circle cx="' + x1 + '" cy="' + y1 + '" r="3" fill="#10b981">' +
+'<animateMotion dur="2s" repeatCount="indefinite" path="' + d + '" rotate="auto" />' +
+'</circle>';
+}
+});
+if (this.state.dragType === 'edge' && this.state.tempEdge) {
+const n1 = this.state.nodes.find(function(n) { return n.id === OpsCanvas.state.tempEdge.fromNode; });
+if (n1) {
+const isOut = OpsCanvas.state.tempEdge.fromPort === 'out';
+const x1 = n1.x + (isOut ? 260 : 0);
+const y1 = n1.y + 65;
+const x2 = (this.state.tempEdge.x2 - this.state.camera.x) / this.state.camera.z;
+const y2 = (this.state.tempEdge.y2 - this.state.camera.y) / this.state.camera.z;
+const cp = Math.max(Math.abs(x2 - x1) * 0.5, 50);
+const controlX1 = isOut ? x1 + cp : x1 - cp;
+const controlX2 = isOut ? x2 - cp : x2 + cp;
+const d = 'M ' + x1 + ' ' + y1 + ' C ' + controlX1 + ' ' + y1 + ', ' + controlX2 + ' ' + y2 + ', ' + x2 + ' ' + y2;
+const strokeColor = isOut ? '#f59e0b' : '#3b82f6';
+svgHtml += '<path d="' + d + '" fill="none" stroke="' + strokeColor + '" stroke-width="4" stroke-dasharray="6,6" opacity="0.8" />';
+}
+}
+svgHtml += '</g>';
+this.dom.edgesLayer.innerHTML = svgHtml;
+},
+resetCamera: function() {
+this.state.camera = { x: 0, y: 0, z: 1 };
+this.applyCamera();
+}
+};
+
+window.OpsCanvas = OpsCanvas;
+</script>

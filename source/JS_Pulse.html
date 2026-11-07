@@ -1,0 +1,474 @@
+<!-- File: JS_Pulse.html -->
+<style>
+@keyframes sirenPulse {
+0% { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 4px rgba(192, 132, 252, 0.4)); }
+25% { transform: scale(1.15) rotate(-10deg); filter: drop-shadow(0 0 12px rgba(192, 132, 252, 0.8)); }
+50% { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 4px rgba(192, 132, 252, 0.4)); }
+75% { transform: scale(1.15) rotate(10deg); filter: drop-shadow(0 0 12px rgba(192, 132, 252, 0.8)); }
+100% { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 4px rgba(192, 132, 252, 0.4)); }
+}
+</style>
+
+<script>
+/**
+* =========================================
+* FLOWPILOT CLIENT-SIDE ENGINE (V8 FRONTEND)
+* Module: Broadcast System (News Container & Ticker)
+* Pipeline: TG Ticker, 3D Floating UI, Dark Dropdowns & Animated Header
+* =========================================
+*/
+
+// --- 1. BROADCASTS & NOTIFICATION ENGINE ---
+
+let sessionDismissedTickerId = null;
+let tickerAnimationCompleted = false;
+let tickerTrackerId = null;
+window.currentBroadcastTab = window.currentBroadcastTab || 'create';
+
+function formatBroadcastContent(text) {
+if (!text) return '';
+let links = [];
+let preProcessed = text.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g, function(match, label, url) {
+links.push({label: label, url: url});
+return `%%MDLINK_${links.length - 1}%%`;
+});
+let html = '';
+if (typeof formatCellContent === 'function') {
+html = formatCellContent(preProcessed);
+} else {
+html = escapeHTML(preProcessed);
+}
+links.forEach((linkObj, i) => {
+let aTag = `<a href="${linkObj.url}" target="_blank" rel="noopener noreferrer" style="color: #60a5fa; text-decoration: underline; font-weight: 800; text-shadow: 0 0 8px rgba(96,165,250,0.4);" onclick="event.stopPropagation()">${escapeHTML(linkObj.label)}</a>`;
+html = html.replace(`%%MDLINK_${i}%%`, aTag);
+});
+return html;
+}
+
+function formatTickerContent(text) {
+if (!text) return '';
+let escaped = escapeHTML(text);
+return escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g, function(match, label, url) {
+return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color: inherit; font-weight: 800; text-decoration: underline; pointer-events: auto;" onclick="event.stopPropagation()">${label}</a>`;
+});
+}
+
+function checkUnreadBroadcasts() {
+if (!pulseBroadcasts || pulseBroadcasts.length === 0) return;
+const now = Date.now();
+const liveBroadcasts = pulseBroadcasts.filter(b => new Date(b.scheduled).getTime() <= now);
+if (liveBroadcasts.length === 0) return;
+
+const latestId = Math.max(...liveBroadcasts.map(b => parseInt(b.id)));
+const lastReadId = parseInt(localStorage.getItem(`pulse_last_read_${APP_TEAM}`) || "0");
+const btn = document.getElementById('ai-toggle-btn');
+if (latestId > lastReadId && btn) {
+btn.classList.add('has-unread');
+}
+}
+
+function trackTickerPriority() {
+const wrapper = document.getElementById('pulse-ticker');
+const icon = document.getElementById('pulse-ticker-icon-symbol');
+if (!wrapper || !wrapper.classList.contains('active')) {
+if (tickerTrackerId) cancelAnimationFrame(tickerTrackerId);
+return;
+}
+
+const wrapperRect = wrapper.getBoundingClientRect();
+const importantItems = document.querySelectorAll('.ticker-news-item[data-priority="IMPORTANT"]');
+let isImportantVisible = false;
+
+importantItems.forEach(item => {
+const rect = item.getBoundingClientRect();
+if (rect.left < wrapperRect.right && rect.right > wrapperRect.left) {
+isImportantVisible = true;
+}
+});
+
+if (isImportantVisible) {
+if (!wrapper.classList.contains('important-ticker')) {
+wrapper.classList.add('important-ticker');
+if (icon) icon.innerText = 'warning';
+}
+} else {
+if (wrapper.classList.contains('important-ticker')) {
+wrapper.classList.remove('important-ticker');
+if (icon) icon.innerText = 'campaign';
+}
+}
+
+tickerTrackerId = requestAnimationFrame(trackTickerPriority);
+}
+
+function updateNewsTicker() {
+const ticker = document.getElementById('pulse-ticker');
+const tickerText = document.getElementById('pulse-ticker-text');
+const chatWindow = document.getElementById('ai-chat-window');
+
+if (!ticker || !tickerText) return;
+
+const now = Date.now();
+const liveBroadcasts = pulseBroadcasts.filter(b => new Date(b.scheduled).getTime() <= now);
+
+if (liveBroadcasts.length === 0) {
+ticker.classList.remove('active');
+if (tickerTrackerId) cancelAnimationFrame(tickerTrackerId);
+return;
+}
+
+const maxLiveId = Math.max(...liveBroadcasts.map(b => parseInt(b.id)));
+if (sessionDismissedTickerId !== null && maxLiveId <= sessionDismissedTickerId) {
+ticker.classList.remove('active');
+if (tickerTrackerId) cancelAnimationFrame(tickerTrackerId);
+return;
+}
+let totalChars = 0;
+const parts = liveBroadcasts.map(b => {
+totalChars += (b.author || '').length + (b.payload || '').length;
+return `<span class="ticker-news-item" data-priority="${b.priority}"><span style="opacity:0.7; margin-right:8px;">${escapeHTML(b.author)}:</span> ${formatTickerContent(b.payload)}</span>`;
+});
+const currentContent = parts.join('<span style="margin: 0 40px; color: var(--primary); opacity: 0.6; font-weight: 800;">&bull;</span>');
+if (tickerText.innerHTML !== currentContent) {
+tickerText.innerHTML = currentContent;
+tickerAnimationCompleted = false;
+ticker.classList.remove('show-close');
+let contentEl = document.querySelector('.pulse-ticker-content');
+if (contentEl) {
+const newContentEl = contentEl.cloneNode(true);
+contentEl.parentNode.replaceChild(newContentEl, contentEl);
+contentEl = newContentEl;
+const duration = Math.max(15, Math.ceil(totalChars / 12));
+contentEl.style.animationDuration = duration + 's';
+contentEl.addEventListener('animationiteration', () => {
+tickerAnimationCompleted = true;
+ticker.classList.add('show-close');
+});
+}
+} else {
+if (tickerAnimationCompleted) {
+ticker.classList.add('show-close');
+}
+}
+
+if (chatWindow && chatWindow.classList.contains('ai-hidden')) {
+ticker.classList.add('active');
+if (tickerTrackerId) cancelAnimationFrame(tickerTrackerId);
+tickerTrackerId = requestAnimationFrame(trackTickerPriority);
+} else {
+ticker.classList.remove('active');
+if (tickerTrackerId) cancelAnimationFrame(tickerTrackerId);
+}
+}
+
+function closeNewsTicker(event) {
+event.stopPropagation();
+const ticker = document.getElementById('pulse-ticker');
+if (ticker) {
+ticker.classList.remove('active');
+if (tickerTrackerId) cancelAnimationFrame(tickerTrackerId);
+const now = Date.now();
+const liveBroadcasts = pulseBroadcasts.filter(b => new Date(b.scheduled).getTime() <= now);
+if (liveBroadcasts.length > 0) {
+const maxLiveId = Math.max(...liveBroadcasts.map(b => parseInt(b.id)));
+sessionDismissedTickerId = maxLiveId;
+}
+}
+}
+
+function switchBroadcastTab(tabId) {
+window.currentBroadcastTab = tabId;
+const btnCreate = document.getElementById('tab-btn-create');
+const btnList = document.getElementById('tab-btn-list');
+const paneCreate = document.getElementById('bc-pane-create');
+const paneList = document.getElementById('bc-pane-list');
+
+if (!btnCreate || !btnList || !paneCreate || !paneList) return;
+
+if (tabId === 'create') {
+btnCreate.style.background = 'var(--surface-glass)';
+btnCreate.style.color = 'var(--primary)';
+btnCreate.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
+btnList.style.background = 'transparent';
+btnList.style.color = 'var(--text-muted)';
+btnList.style.boxShadow = 'none';
+
+paneCreate.style.display = 'flex';
+paneList.style.display = 'none';
+} else {
+btnList.style.background = 'var(--surface-glass)';
+btnList.style.color = 'var(--primary)';
+btnList.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
+btnCreate.style.background = 'transparent';
+btnCreate.style.color = 'var(--text-muted)';
+btnCreate.style.boxShadow = 'none';
+
+paneList.style.display = 'flex';
+paneCreate.style.display = 'none';
+}
+}
+
+function renderPulseBroadcasts() {
+checkUnreadBroadcasts();
+updateNewsTicker();
+const bodyEl = document.getElementById('ai-messages');
+const footerEl = document.querySelector('.ai-footer');
+const headerEl = document.querySelector('.ai-header');
+
+if(!bodyEl) return;
+if(footerEl) footerEl.style.display = 'none';
+
+// DYNAMIC HEADER UPGRADE (3D Title & Animated Siren)
+if (headerEl) {
+headerEl.style.background = 'linear-gradient(145deg, rgba(var(--surface-glass-rgb), 0.9), rgba(0,0,0,0.5))';
+headerEl.style.borderBottom = '1px solid rgba(255,255,255,0.08)';
+headerEl.style.boxShadow = '0 10px 30px rgba(0,0,0,0.3)';
+let headerTitle = isAgent ? 'News & Updates' : 'Broadcast Studio';
+headerEl.innerHTML = `
+<div class="ai-title" style="font-family: var(--font-display); font-weight: 800; font-size: 1.35rem; letter-spacing: 0.5px; background: linear-gradient(135deg, #c084fc, #60a5fa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 2px 5px rgba(0,0,0,0.6)); display: flex; align-items: center; gap: 14px;">
+<div style="display: flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 12px; background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.4); box-shadow: inset 0 0 15px rgba(168, 85, 247, 0.3), 0 4px 15px rgba(0,0,0,0.4);">
+<i class="material-icons" style="font-size: 22px; color: #c084fc; animation: sirenPulse 3s ease-in-out infinite;">campaign</i>
+</div>
+${headerTitle}
+</div>
+<button class="btn-close" style="filter: var(--close-filter, none); opacity: 0.8; transition: 0.2s;" onmouseover="this.style.opacity='1'; this.style.transform='scale(1.1) rotate(90deg)';" onmouseout="this.style.opacity='0.8'; this.style.transform='scale(1) rotate(0deg)';" onclick="toggleAI()"></button>
+`;
+}
+if (!isAgent) {
+const existingInput = document.getElementById('bc-message');
+const savedMessage = existingInput ? existingInput.value : '';
+
+let wfOptions = targetWorkflows.map(w => `<option value="${escapeHTML(w)}" style="background: #0f172a; color: #f8fafc;">${escapeHTML(w)}</option>`).join('');
+let editorHtml = `
+<div class="broadcast-editor-container h-100 d-flex flex-column p-3 pt-0">
+<!-- SEGMENTED TOGGLE SWITCH -->
+<div class="d-flex p-1 rounded-pill mb-3 mt-1 flex-shrink-0" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); box-shadow: inset 0 2px 10px rgba(0,0,0,0.4);">
+<button id="tab-btn-create" class="btn flex-grow-1 fw-bold rounded-pill" style="font-size: 0.8rem; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); border: none;" onclick="switchBroadcastTab('create')">
+<i class="material-icons align-middle me-1" style="font-size:16px;">edit_square</i> CREATE
+</button>
+<button id="tab-btn-list" class="btn flex-grow-1 fw-bold rounded-pill text-muted" style="font-size: 0.8rem; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); border: none; background: transparent;" onclick="switchBroadcastTab('list')">
+<i class="material-icons align-middle me-1" style="font-size:16px;">dynamic_feed</i> ACTIVE NEWS
+</button>
+</div>
+
+<!-- PANE 1: 3D CREATION FORM -->
+<div id="bc-pane-create" class="flex-column flex-grow-1" style="display: flex;">
+<div class="p-4 rounded-4" style="background: linear-gradient(145deg, rgba(var(--surface-glass-rgb), 0.4), rgba(0,0,0,0.1)); border: 1px solid var(--border-glass); border-top: 1px solid rgba(255,255,255,0.1); box-shadow: 0 10px 30px rgba(0,0,0,0.15);">
+<textarea id="bc-message" class="custom-scroll mb-3"
+style="width: 100%; min-height: 120px; resize: none; border-radius: 12px; padding: 16px;
+background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #f8fafc; font-size: 0.95rem; outline: none; transition: 0.3s; box-shadow: inset 0 4px 15px rgba(0,0,0,0.5);"
+placeholder="Type broadcast message... (Ctrl+K for Links)" onfocus="this.style.borderColor='#a855f7'; this.style.boxShadow='inset 0 4px 15px rgba(0,0,0,0.5), 0 0 15px rgba(168, 85, 247, 0.3)';" onblur="this.style.borderColor='rgba(255,255,255,0.1)'; this.style.boxShadow='inset 0 4px 15px rgba(0,0,0,0.5)';">${escapeHTML(savedMessage)}</textarea>
+<div class="row g-3 mb-3">
+<div class="col-6">
+<label style="font-size: 0.7rem; font-weight: 800; letter-spacing: 0.5px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px; display: block; text-shadow: 0 1px 2px rgba(0,0,0,0.5);">Target Audience</label>
+<select id="bc-target" class="form-select m-0 w-100"
+style="border-radius: 16px; padding: 10px 16px; background: rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.1); color: #f8fafc; font-size: 0.85rem; font-weight: 600; cursor: pointer; box-shadow: inset 0 2px 10px rgba(0,0,0,0.6); transition: 0.3s;" onfocus="this.style.borderColor='#a855f7'" onblur="this.style.borderColor='rgba(255,255,255,0.1)'">
+<option value="ALL" style="background: #0f172a; color: #f8fafc;">🌐 All Workflows</option>
+${wfOptions}
+</select>
+</div>
+<div class="col-6">
+<label style="font-size: 0.7rem; font-weight: 800; letter-spacing: 0.5px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px; display: block; text-shadow: 0 1px 2px rgba(0,0,0,0.5);">Priority</label>
+<select id="bc-priority" class="form-select m-0 w-100"
+style="border-radius: 16px; padding: 10px 16px; background: rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.1); color: #f8fafc; font-size: 0.85rem; font-weight: 600; cursor: pointer; box-shadow: inset 0 2px 10px rgba(0,0,0,0.6); transition: 0.3s;" onfocus="this.style.borderColor='#a855f7'" onblur="this.style.borderColor='rgba(255,255,255,0.1)'">
+<option value="NORMAL" style="background: #0f172a; color: #f8fafc;">🔵 Normal</option>
+<option value="IMPORTANT" style="background: #0f172a; color: #fca5a5;">🔴 Important</option>
+</select>
+</div>
+</div>
+<div class="mb-4">
+<label style="font-size: 0.7rem; font-weight: 800; letter-spacing: 0.5px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px; display: block; text-shadow: 0 1px 2px rgba(0,0,0,0.5);">Schedule (Local Time)</label>
+<input type="datetime-local" id="bc-scheduled" class="m-0 w-100"
+style="border-radius: 16px; padding: 10px 16px; background: rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.1); color: #f8fafc; font-size: 0.85rem; font-weight: 600; font-family: var(--font-ui); outline: none; box-shadow: inset 0 2px 10px rgba(0,0,0,0.6); transition: 0.3s;" onfocus="this.style.borderColor='#a855f7'" onblur="this.style.borderColor='rgba(255,255,255,0.1)'">
+</div>
+<button class="w-100 d-flex align-items-center justify-content-center gap-2 mt-2" id="btnSendBc" onclick="sendBroadcast()"
+style="background: linear-gradient(135deg, #a855f7, #6366f1); border: 1px solid rgba(255,255,255,0.2); border-radius: 24px; padding: 12px; color: #fff; font-weight: 800; font-size: 0.95rem; letter-spacing: 1px; cursor: pointer; box-shadow: 0 8px 25px rgba(168, 85, 247, 0.4), inset 0 2px 0 rgba(255,255,255,0.2); transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);"
+onmouseover="this.style.transform='translateY(-3px) scale(1.02)'; this.style.boxShadow='0 12px 30px rgba(168, 85, 247, 0.6), inset 0 2px 0 rgba(255,255,255,0.3)';"
+onmouseout="this.style.transform='translateY(0) scale(1)'; this.style.boxShadow='0 8px 25px rgba(168, 85, 247, 0.4), inset 0 2px 0 rgba(255,255,255,0.2)';">
+<i class="material-icons" style="font-size:20px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));">rocket_launch</i> PUBLISH
+</button>
+</div>
+</div>
+
+<!-- PANE 2: ACTIVE LIST -->
+<div id="bc-pane-list" class="flex-column flex-grow-1 custom-scroll" style="display: none; padding-right: 4px;">
+<div id="bc-list-container" class="d-flex flex-column gap-3"></div>
+</div>
+</div>
+`;
+bodyEl.innerHTML = editorHtml;
+switchBroadcastTab(window.currentBroadcastTab);
+
+const dateInput = document.getElementById('bc-scheduled');
+if (dateInput) {
+dateInput.style.colorScheme = (currentTheme === 'dark') ? 'dark' : 'light';
+}
+
+const bcInput = document.getElementById('bc-message');
+if (bcInput) {
+bcInput.addEventListener('keydown', function(e) {
+if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+e.preventDefault();
+const url = prompt("Enter the URL link (e.g. https://...):", "https://");
+if (url) {
+const start = this.selectionStart;
+const end = this.selectionEnd;
+const selectedText = this.value.substring(start, end) || "link";
+const text = this.value;
+const replacement = `[${selectedText}](${url})`;
+this.value = text.substring(0, start) + replacement + text.substring(end);
+this.focus();
+this.selectionStart = this.selectionEnd = start + replacement.length;
+}
+}
+});
+}
+renderBroadcastListQA();
+} else {
+// AGENT MODE: 3D News Feed
+let feedHtml = '';
+const now = Date.now();
+const liveBroadcasts = pulseBroadcasts.filter(b => new Date(b.scheduled).getTime() <= now);
+
+if (liveBroadcasts.length > 0) {
+feedHtml += `<div class="broadcast-feed-container mb-4 d-flex flex-column gap-3">`;
+liveBroadcasts.forEach(b => {
+const d = new Date(b.scheduled).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+const isImportant = b.priority === 'IMPORTANT';
+const borderColor = isImportant ? 'var(--danger)' : 'var(--primary)';
+const glowColor = isImportant ? 'rgba(225,29,72,0.3)' : 'rgba(99,102,241,0.3)';
+const priorityIcon = isImportant ? 'warning' : 'campaign';
+
+feedHtml += `
+<div class="broadcast-msg" style="background: linear-gradient(145deg, rgba(var(--surface-glass-rgb), 0.7), rgba(0,0,0,0.3)); border: 1px solid var(--border-glass); border-left: 4px solid ${borderColor}; border-top: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 20px; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.2), inset 0 0 20px rgba(0,0,0,0.1); transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);" onmouseover="this.style.transform='translateY(-3px) scale(1.01)'; this.style.boxShadow='0 15px 35px rgba(0,0,0,0.3), 0 0 20px ${glowColor}';" onmouseout="this.style.transform='translateY(0) scale(1)'; this.style.boxShadow='0 10px 25px rgba(0,0,0,0.2), inset 0 0 20px rgba(0,0,0,0.1)';">
+<div class="broadcast-msg-header d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(255,255,255,0.05) !important;">
+<div class="broadcast-author" style="font-weight: 800; font-size: 0.95rem; color: ${borderColor}; display: flex; align-items: center; gap: 6px; text-shadow: 0 0 10px ${glowColor};"><i class="material-icons" style="font-size:18px;">${priorityIcon}</i> ${escapeHTML(b.author)}</div>
+<div class="broadcast-time" style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-code); font-weight: 600;">${d}</div>
+</div>
+<div class="broadcast-content" style="font-size: 1rem; line-height: 1.7; color: var(--text-main); font-weight: 500; white-space: pre-wrap; text-shadow: 0 1px 2px rgba(0,0,0,0.3);">${formatBroadcastContent(b.payload)}</div>
+</div>
+`;
+});
+feedHtml += `</div>`;
+} else {
+feedHtml = `
+<div class="text-center text-muted mt-5 pt-4">
+<div style="display:inline-block; padding: 24px; border-radius: 50%; background: rgba(0,0,0,0.2); box-shadow: inset 0 4px 10px rgba(0,0,0,0.3); margin-bottom: 20px;">
+<i class="material-icons" style="font-size: 56px; opacity:0.4; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));">feed</i>
+</div>
+<p class="fw-bold" style="letter-spacing: 0.5px; font-size: 1.1rem;">No active news at the moment.</p>
+</div>
+`;
+}
+bodyEl.innerHTML = feedHtml;
+}
+}
+
+function renderBroadcastListQA() {
+const container = document.getElementById('bc-list-container');
+if(!container) return;
+container.innerHTML = '';
+if (pulseBroadcasts.length === 0) {
+container.innerHTML = `
+<div class="text-muted small text-center mt-5 pt-4">
+<div style="display:inline-block; padding: 20px; border-radius: 50%; background: rgba(0,0,0,0.2); box-shadow: inset 0 4px 10px rgba(0,0,0,0.3); margin-bottom: 16px;">
+<i class="material-icons" style="font-size: 40px; opacity:0.3; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));">dynamic_feed</i>
+</div>
+<div class="fw-bold text-uppercase" style="letter-spacing: 1px;">No active broadcasts</div>
+</div>`;
+return;
+}
+pulseBroadcasts.forEach(b => {
+const d = new Date(b.scheduled).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+let isFuture = new Date(b.scheduled).getTime() > Date.now();
+let statusBadge = isFuture ? '<span class="badge bg-warning text-dark ms-2 border border-warning" style="font-size: 0.65rem; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">Scheduled</span>' : '<span class="badge bg-success ms-2 border border-success" style="font-size: 0.65rem; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">Live</span>';
+let priorityBadge = b.priority === 'IMPORTANT' ? '<span class="badge bg-danger ms-1 border border-danger" style="font-size: 0.65rem; box-shadow: 0 2px 4px rgba(0,0,0,0.2);"><i class="material-icons" style="font-size:10px; vertical-align:middle;">warning</i> Imp</span>' : '';
+container.innerHTML += `
+<div class="broadcast-item" style="background: linear-gradient(145deg, rgba(var(--surface-glass-rgb), 0.6), rgba(0,0,0,0.2)); border: 1px solid var(--border-glass); border-top: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 20px rgba(0,0,0,0.2); border-radius: 16px; padding: 16px; transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);"
+onmouseover="this.style.transform='translateY(-4px) scale(1.01)'; this.style.borderColor='rgba(168, 85, 247, 0.4)'; this.style.boxShadow='0 15px 30px rgba(0,0,0,0.3), 0 0 15px rgba(168, 85, 247, 0.15)';"
+onmouseout="this.style.transform='translateY(0) scale(1)'; this.style.borderColor='var(--border-glass)'; this.style.boxShadow='0 8px 20px rgba(0,0,0,0.2)';">
+<div class="broadcast-item-header d-flex justify-content-between align-items-center mb-2 pb-2 border-bottom" style="border-color: rgba(255,255,255,0.05) !important;">
+<div style="font-weight: 800; font-size: 0.8rem; letter-spacing: 0.5px; text-shadow: 0 1px 2px rgba(0,0,0,0.5);">To: <span style="color: var(--primary);">${escapeHTML(b.target)}</span> ${statusBadge} ${priorityBadge}</div>
+<div title="Delete Broadcast" style="display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; background: rgba(225,29,72,0.05); transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); cursor: pointer;"
+onmouseover="this.style.background='rgba(225,29,72,0.15)'; this.style.transform='scale(1.1) translateY(-2px)'; this.children[0].style.transform='rotate(8deg) scale(1.2)'; this.children[0].style.color='#f43f5e'; this.children[0].style.filter='drop-shadow(0 0 6px rgba(225,29,72,0.8))';"
+onmouseout="this.style.background='rgba(225,29,72,0.05)'; this.style.transform='scale(1) translateY(0)'; this.children[0].style.transform='rotate(0deg) scale(1)'; this.children[0].style.color='var(--danger)'; this.children[0].style.filter='none';"
+onclick="removeBroadcast('${b.id}')">
+<i class="material-icons" style="font-size:16px; color: var(--danger); transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);">delete</i>
+</div>
+</div>
+<div class="broadcast-item-body mt-2" style="font-size: 0.95rem; line-height: 1.6; text-shadow: 0 1px 2px rgba(0,0,0,0.3);">${formatBroadcastContent(b.payload)}</div>
+<div class="broadcast-item-footer mt-3 pt-2 d-flex justify-content-between align-items-center" style="border-top: 1px dashed rgba(255,255,255,0.05);">
+<span class="d-flex align-items-center gap-1" style="font-weight: 700; font-size: 0.75rem; color: #a855f7; background: rgba(168, 85, 247, 0.1); padding: 4px 10px; border-radius: 12px; border: 1px solid rgba(168, 85, 247, 0.2);"><i class="material-icons" style="font-size:14px;">person</i> ${escapeHTML(b.author)}</span>
+<span class="d-flex align-items-center gap-1" style="font-family: var(--font-code); font-size: 0.75rem; color: var(--text-muted);"><i class="material-icons" style="font-size:14px; opacity:0.7;">schedule</i> ${d}</span>
+</div>
+</div>
+`;
+});
+}
+
+function sendBroadcast() {
+const msg = document.getElementById('bc-message').value.trim();
+const target = document.getElementById('bc-target').value;
+const scheduled = document.getElementById('bc-scheduled').value;
+const priority = document.getElementById('bc-priority').value;
+if(!msg) return showToast("Message cannot be empty.", "error");
+const btn = document.getElementById('btnSendBc');
+btn.disabled = true;
+btn.innerHTML = '<span class="spinner-border spinner-border-sm" style="width: 1rem; height: 1rem; margin-right: 8px;"></span> PUBLISHING...';
+const payload = { message: msg, target: target, scheduled: scheduled, priority: priority };
+google.script.run.withSuccessHandler(res => {
+btn.disabled = false;
+btn.innerHTML = '<i class="material-icons" style="font-size:20px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));">rocket_launch</i> PUBLISH';
+if(res.success) {
+showToast("Broadcast published successfully!", "success");
+window.currentBroadcastTab = 'list';
+document.getElementById('bc-message').value = '';
+loadPulseBroadcasts();
+} else {
+showToast(res.error, "error");
+}
+}).publishBroadcast(JSON.stringify(payload));
+}
+
+function removeBroadcast(id) {
+if(!confirm("Delete this broadcast? It will be removed from all Agent feeds immediately.")) return;
+google.script.run.withSuccessHandler(res => {
+if(res.success) {
+showToast("Broadcast removed.", "success");
+loadPulseBroadcasts();
+} else {
+showToast(res.error, "error");
+}
+}).deleteBroadcast(id);
+}
+
+// --- 2. UI INTERACTIONS ---
+
+function toggleAI() {
+const win = document.getElementById('ai-chat-window');
+const btn = document.getElementById('ai-toggle-btn');
+const ticker = document.getElementById('pulse-ticker');
+
+win.classList.toggle('ai-hidden');
+if (!win.classList.contains('ai-hidden')) {
+btn.style.transform = 'scale(0.9)';
+btn.style.animationPlayState = 'paused';
+if (ticker) {
+ticker.classList.remove('active');
+ticker.classList.add('show-close');
+if (tickerTrackerId) cancelAnimationFrame(tickerTrackerId);
+}
+btn.classList.remove('has-unread');
+const now = Date.now();
+const liveBroadcasts = pulseBroadcasts.filter(b => new Date(b.scheduled).getTime() <= now);
+if (liveBroadcasts.length > 0) {
+const latestId = Math.max(...liveBroadcasts.map(b => parseInt(b.id)));
+localStorage.setItem(`pulse_last_read_${APP_TEAM}`, latestId.toString());
+}
+} else {
+btn.style.transform = 'scale(1)';
+btn.style.animationPlayState = 'running';
+updateNewsTicker();
+}
+}
+</script>

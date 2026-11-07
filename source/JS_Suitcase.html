@@ -1,0 +1,544 @@
+<!-- File: JS_Suitcase.html -->
+<script>
+/**
+* =========================================
+* FLOWPILOT CLIENT-SIDE ENGINE (V8 FRONTEND)
+* Module: Suitcase (Folders, Grid, D&D, Context Menu)
+* Pipeline: Agent Zero-Trust Visibility (Status Dot Edition)
+* =========================================
+*/
+
+// --- 1. CONTEXT MENUS (RIGHT-CLICK) ---
+function initContextMenus() {
+const folderMenu = document.createElement('div');
+folderMenu.id = 'folderContextMenu';
+folderMenu.className = 'flowpilot-context-menu';
+folderMenu.innerHTML = `
+<div class="context-menu-item" onclick="handleFolderAction('new')"><i class="material-icons">create_new_folder</i> Create Subfolder</div>
+<div class="context-menu-item" onclick="handleFolderAction('rename')"><i class="material-icons">edit</i> Rename Folder</div>
+<div class="context-menu-item" onclick="handleFolderAction('toggle_vis')"><div style="width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 8px rgba(16, 185, 129, 0.6); margin: 0 8px;"></div> Toggle Agent Visibility</div>
+<div class="context-menu-divider"></div>
+<div class="context-menu-item danger" onclick="handleFolderAction('delete')"><i class="material-icons">delete</i> Delete Folder</div>
+`;
+document.body.appendChild(folderMenu);
+
+const fileMenu = document.createElement('div');
+fileMenu.id = 'fileContextMenu';
+fileMenu.className = 'flowpilot-context-menu';
+fileMenu.innerHTML = `
+<div class="context-menu-item" onclick="handleFileAction('edit')"><i class="material-icons">edit</i> Edit / Move</div>
+<div class="context-menu-item" onclick="handleFileAction('toggle_vis')"><div style="width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 8px rgba(16, 185, 129, 0.6); margin: 0 8px;"></div> Agent Visibility</div>
+<div class="context-menu-divider"></div>
+<div class="context-menu-item danger" onclick="handleFileAction('delete')"><i class="material-icons">delete</i> Delete File</div>
+`;
+document.body.appendChild(fileMenu);
+
+document.addEventListener('click', () => {
+folderMenu.classList.remove('active');
+fileMenu.classList.remove('active');
+});
+}
+
+function showFolderContextMenu(e, folderId) {
+if(folderId === 'root') return;
+e.preventDefault();
+activeContextFolderId = folderId;
+const menu = document.getElementById('folderContextMenu');
+document.getElementById('fileContextMenu').classList.remove('active');
+menu.style.left = `${e.clientX}px`;
+menu.style.top = `${e.clientY}px`;
+menu.classList.add('active');
+}
+
+function showFileContextMenu(e, fileId) {
+if(isAgent) return;
+e.preventDefault();
+e.stopPropagation();
+activeContextFileId = fileId;
+const menu = document.getElementById('fileContextMenu');
+document.getElementById('folderContextMenu').classList.remove('active');
+menu.style.left = `${e.clientX}px`;
+menu.style.top = `${e.clientY}px`;
+menu.classList.add('active');
+}
+
+function handleFolderAction(action) {
+const targetId = activeContextFolderId;
+if(!targetId) return;
+if(action === 'new') {
+let name = prompt("Enter name for the new subfolder:");
+if(name && name.trim()) {
+qaCategories.push({ id: 'cat_' + Date.now(), name: name.trim(), parentId: targetId });
+expandedFolders.add(targetId);
+syncToGlobalState();
+renderSidebar();
+showToast("Subfolder created.", "success");
+}
+} else if(action === 'rename') {
+let cat = qaCategories.find(c => c.id === targetId);
+if(cat) {
+let name = prompt("New folder name:", cat.name);
+if(name && name.trim()) {
+cat.name = name.trim();
+syncToGlobalState();
+renderSidebar();
+}
+}
+} else if(action === 'toggle_vis') {
+let validIds = getCategoryAndDescendants(targetId);
+const filesInCat = qaDatabase.filter(d => validIds.includes(d.category));
+if (filesInCat.length === 0) return showToast("Folder is empty. Add items first.", "info");
+const currentlyVisible = filesInCat.some(d => d.isAgentVisible);
+const newState = !currentlyVisible;
+qaDatabase.forEach(d => { if(validIds.includes(d.category)) d.isAgentVisible = newState; });
+syncToGlobalState();
+searchFiles();
+if (typeof renderCategoryList === 'function') renderCategoryList();
+renderSidebar();
+showToast(`Folder visibility set to: ${newState ? 'Visible' : 'Hidden'}`, "success");
+} else if(action === 'delete') {
+let validIds = getCategoryAndDescendants(targetId);
+let hasFiles = qaDatabase.some(d => validIds.includes(d.category));
+let hasChildren = qaCategories.some(c => c.parentId === targetId);
+if(hasFiles || hasChildren) {
+if(!confirm("WARNING: This folder is not empty. If deleted, all files and direct subfolders will be moved to the Root (Master Hub). Proceed?")) return;
+}
+qaDatabase.forEach(d => { if(d.category === targetId) d.category = 'root'; });
+qaCategories.forEach(c => { if(c.parentId === targetId) c.parentId = 'root'; });
+qaCategories = qaCategories.filter(c => c.id !== targetId);
+if(validIds.includes(currentCategory)) filterCategory('root');
+syncToGlobalState();
+renderSidebar();
+searchFiles();
+if (document.getElementById('settingsModal') && document.getElementById('settingsModal').style.display === 'block') {
+if(typeof renderCategoryList === 'function') renderCategoryList();
+}
+showToast("Folder deleted.", "success");
+}
+}
+
+function handleFileAction(action) {
+if(!activeContextFileId) return;
+if(action === 'edit') {
+openFileModal(activeContextFileId);
+} else if(action === 'toggle_vis') {
+let doc = qaDatabase.find(d => d.id === activeContextFileId);
+if(doc) {
+doc.isAgentVisible = !doc.isAgentVisible;
+syncToGlobalState();
+searchFiles();
+renderSidebar();
+showToast(`File Visibility: ${doc.isAgentVisible ? 'ON' : 'OFF'}`, "success");
+}
+} else if(action === 'delete') {
+deleteDocument(activeContextFileId);
+}
+}
+
+// --- 2. HTML5 DRAG & DROP ENGINE ---
+function handleMainAreaDragOver(e) {
+e.preventDefault();
+e.dataTransfer.dropEffect = 'copy';
+const view = document.getElementById('view-suitcase');
+if (view) view.style.border = '2px dashed var(--primary)';
+}
+
+function handleMainAreaDragLeave(e) {
+const view = document.getElementById('view-suitcase');
+if (view) view.style.border = 'none';
+}
+
+function handleMainAreaDrop(e) {
+e.preventDefault();
+const view = document.getElementById('view-suitcase');
+if (view) view.style.border = 'none';
+processAndOpenModal(e, currentCategory);
+}
+
+function handleFolderDragOver(e) {
+e.preventDefault();
+e.dataTransfer.dropEffect = 'copy';
+const folderHeader = e.target.closest('.folder-header');
+if (folderHeader) {
+document.querySelectorAll('.folder-header.drag-over').forEach(el => el.classList.remove('drag-over'));
+folderHeader.classList.add('drag-over');
+}
+}
+
+function handleFolderDragLeave(e) {
+const folderHeader = e.target.closest('.folder-header');
+if (folderHeader) {
+folderHeader.classList.remove('drag-over');
+}
+}
+
+function handleFolderDrop(e) {
+e.preventDefault();
+document.querySelectorAll('.folder-header.drag-over').forEach(el => el.classList.remove('drag-over'));
+const folderHeader = e.target.closest('.folder-header');
+if (!folderHeader) return;
+const targetFolderId = folderHeader.getAttribute('data-folder-id');
+if (!targetFolderId) return;
+processAndOpenModal(e, targetFolderId);
+}
+
+function processAndOpenModal(e, targetFolderId) {
+let url = "";
+
+const mozUrl = e.dataTransfer.getData('text/x-moz-url');
+if (mozUrl) {
+const parts = mozUrl.split('\n');
+if (parts.length >= 1) url = parts[0].trim();
+}
+
+if (!url) {
+const htmlData = e.dataTransfer.getData('text/html');
+if (htmlData) {
+const tempDiv = document.createElement('div');
+tempDiv.innerHTML = htmlData;
+const aTag = tempDiv.querySelector('a');
+if (aTag && aTag.href) {
+url = aTag.href.trim();
+}
+}
+}
+
+if (!url) url = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('URL');
+if (!url) url = e.dataTransfer.getData('text/plain');
+
+if (url) url = url.trim();
+
+if (!url || !url.startsWith('http')) {
+showToast("Invalid URL. Drag a valid bookmark or link.", "error");
+return;
+}
+
+let type = 'link';
+let lowerUrl = url.toLowerCase();
+if (lowerUrl.includes('docs.google.com/document')) type = 'doc';
+else if (lowerUrl.includes('docs.google.com/spreadsheets')) type = 'sheet';
+else if (lowerUrl.endsWith('.pdf') || lowerUrl.includes('.pdf?')) type = 'pdf';
+
+currentTags = [];
+
+document.getElementById('fileForm').reset();
+document.getElementById('docId').value = '';
+document.getElementById('docTitle').value = '';
+document.getElementById('docUrl').value = url;
+document.getElementById('docType').value = type;
+document.getElementById('docCategory').value = targetFolderId || 'root';
+if (document.getElementById('docAgentVisible')) document.getElementById('docAgentVisible').checked = false;
+
+renderTokens('tags');
+fileModal.show();
+setTimeout(() => {
+const titleInput = document.getElementById('docTitle');
+if(titleInput) titleInput.focus();
+}, 500);
+}
+
+// --- 3. UI VIEW & GRID RENDERERS ---
+function updateViewToggleIcon() {
+const icon = document.querySelector('#btnViewToggle i');
+if (icon) icon.innerText = isListView ? 'grid_view' : 'view_list';
+}
+
+function toggleViewMode() {
+isListView = !isListView;
+localStorage.setItem(`qaDEMO_View_${APP_TEAM}`, isListView ? 'list' : 'grid');
+updateViewToggleIcon();
+searchFiles();
+}
+
+function filterCategory(catId, el) {
+currentCategory = catId;
+document.querySelectorAll('.folder-header').forEach(m => m.classList.remove('active'));
+const legacyMenuAll = document.getElementById('menu-all');
+if (legacyMenuAll) legacyMenuAll.classList.remove('active');
+if(el && el.classList) {
+el.classList.add('active');
+} else {
+const rootEl = document.getElementById('head-root');
+if(rootEl) rootEl.classList.add('active');
+}
+const titleEl = document.getElementById('categoryTitleSuitcase');
+if (titleEl) {
+let catNode = qaCategories.find(c => c.id === catId);
+let newTitle = escapeHTML(catNode ? catNode.name : 'Master Hub');
+let icon = titleEl.querySelector('i') || titleEl.querySelector('svg');
+if (icon) {
+titleEl.innerHTML = icon.outerHTML + ' ' + newTitle;
+} else {
+titleEl.innerHTML = newTitle;
+}
+}
+switchView('suitcase');
+searchFiles();
+}
+
+function renderGrid(data) {
+const grid = document.getElementById('fileGrid');
+if(!grid) return;
+grid.innerHTML = '';
+if(isListView) grid.classList.add('list-view');
+else grid.classList.remove('list-view');
+document.getElementById('itemCount').innerText = `${data.length} items`;
+if(data.length === 0) {
+grid.innerHTML = `<div class="text-muted w-100 mt-4 d-flex align-items-center gap-2"><i class="material-icons">info</i> <span>This folder is empty.</span></div>`;
+return;
+}
+data.forEach(item => {
+let iconCss = 'icon-link', iName = 'link';
+if(item.type==='sheet'){ iconCss='icon-sheet'; iName='table_chart'; }
+else if(item.type==='doc'){ iconCss='icon-doc'; iName='description';}
+else if(item.type==='pdf'){ iconCss='icon-pdf'; iName='picture_as_pdf';}
+let visibilityIcon = '';
+if (!isAgent && item.isAgentVisible) {
+visibilityIcon = `<div style="display:inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--success); box-shadow: 0 0 6px rgba(16, 185, 129, 0.5); margin-left: 8px;" title="Visible to Agents"></div>`;
+}
+let parentName = "Master Hub";
+let parentNode = qaCategories.find(c => c.id === item.category);
+if(parentNode) parentName = parentNode.name;
+
+const cardHtml = `
+<div class="card-actions">
+<div class="btn-icon-sm copy" onclick="event.stopPropagation(); copyToClipboard('${escapeForFunctionCall(item.url)}')"><i class="material-icons" style="font-size:18px;">content_copy</i></div>
+</div>
+<div class="file-icon ${iconCss}"><i class="material-icons">${iName}</i></div>
+<div class="file-title d-flex align-items-center" title="${escapeHTML(item.title)}"><span style="text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${escapeHTML(item.title)}</span>${visibilityIcon}</div>
+<div class="file-meta"><span class="d-flex align-items-center gap-1"><i class="material-icons" style="font-size:14px">folder_open</i> <span style="text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${escapeHTML(parentName)}</span></span></div>`;
+const card = document.createElement('div');
+card.className = 'file-card';
+card.innerHTML = cardHtml;
+card.onclick = () => window.open(item.url, '_blank');
+if(!isAgent) card.oncontextmenu = (e) => showFileContextMenu(e, item.id);
+grid.appendChild(card);
+});
+}
+
+function searchFiles() {
+const query = document.getElementById('searchInput').value.toLowerCase();
+let filtered = [];
+if (query) {
+let validCategoryIds = getCategoryAndDescendants(currentCategory);
+filtered = qaDatabase.filter(d => validCategoryIds.includes(d.category) && d.title.toLowerCase().includes(query));
+} else {
+filtered = qaDatabase.filter(d => d.category === currentCategory);
+}
+if (isAgent) filtered = filtered.filter(d => d.isAgentVisible === true);
+renderGrid(filtered);
+}
+
+// --- 4. NESTED FOLDERS ENGINE & AGENT FILTERING ---
+function toggleFolder(e, id) {
+e.stopPropagation();
+const childrenDiv = document.getElementById(`children-${id}`);
+const toggleIcon = e.currentTarget;
+if(childrenDiv) {
+if(expandedFolders.has(id)) {
+expandedFolders.delete(id);
+childrenDiv.classList.remove('open');
+toggleIcon.classList.remove('open');
+} else {
+expandedFolders.add(id);
+childrenDiv.classList.add('open');
+toggleIcon.classList.add('open');
+}
+}
+}
+
+// Helper: Controlla se la cartella (o le sue figlie) contiene almeno un file visibile all'Agent
+function hasVisibleContentForAgent(catId) {
+let validIds = getCategoryAndDescendants(catId);
+return qaDatabase.some(d => validIds.includes(d.category) && d.isAgentVisible === true);
+}
+
+function renderSidebar() {
+const legacyAllMenu = document.getElementById('menu-all');
+if(legacyAllMenu) legacyAllMenu.style.display = 'none';
+
+const container = document.getElementById('dynamicCategories');
+if(!container) return;
+container.innerHTML = '<ul class="folder-tree" id="rootTree"></ul>';
+const rootUl = document.getElementById('rootTree');
+if(!qaCategories.find(c => c.id === 'root')) qaCategories.unshift({ id: 'root', name: 'Master Hub', parentId: null });
+buildFolderTree('root', rootUl, 0);
+if(document.getElementById('docCategory')) {
+document.getElementById('docCategory').innerHTML = buildCategoryDropdown('root', '');
+}
+}
+
+function buildFolderTree(parentId, parentContainer, depth) {
+if(parentId === 'root') {
+let rootNode = qaCategories.find(c => c.id === 'root');
+let li = document.createElement('li');
+li.className = 'folder-node';
+// VISUAL CUE: Status Dot (invece dell'occhio) per Root
+let agentVisIcon = (!isAgent && hasVisibleContentForAgent('root')) ? `<div style="width: 6px; height: 6px; border-radius: 50%; background: var(--success); box-shadow: 0 0 6px rgba(16, 185, 129, 0.5); margin-left: 8px; flex-shrink: 0;" title="Contains Agent-Visible Files"></div>` : '';
+
+li.innerHTML = `
+<div class="folder-header ${currentCategory === 'root' ? 'active' : ''}" id="head-root" data-folder-id="root" onclick="filterCategory('root', this)" ${!isAgent ? 'oncontextmenu="showFolderContextMenu(event, \'root\')"' : ''}>
+<div class="folder-toggle has-children ${expandedFolders.has('root') ? 'open' : ''}" onclick="toggleFolder(event, 'root')">
+<i class="material-icons" style="font-size:16px;">chevron_right</i>
+</div>
+<i class="material-icons text-primary" style="font-size:18px;">cloud_circle</i>
+<span class="fw-bold d-flex align-items-center" style="flex:1;">Master Hub ${agentVisIcon}</span>
+${!isAgent ? `<i class="material-icons opacity-50" style="font-size:14px;" onclick="event.stopPropagation(); handleFolderActionFromRoot('new')">add</i>` : ''}
+</div>
+<div class="folder-children ${expandedFolders.has('root') ? 'open' : ''}" id="children-root"></div>
+`;
+parentContainer.appendChild(li);
+buildFolderTreeChildren('root', document.getElementById('children-root'), 1);
+}
+}
+
+function buildFolderTreeChildren(parentId, container, depth) {
+let nodes = qaCategories.filter(c => c.parentId === parentId);
+// ZERO-TRUST FILTERING: Se è Agent, nascondi cartelle vuote o senza permessi
+if (isAgent) {
+nodes = nodes.filter(c => hasVisibleContentForAgent(c.id));
+}
+
+nodes.forEach(node => {
+let hasChildren = qaCategories.some(c => c.parentId === node.id);
+if (isAgent && hasChildren) {
+hasChildren = qaCategories.some(c => c.parentId === node.id && hasVisibleContentForAgent(c.id));
+}
+
+let isOpen = expandedFolders.has(node.id);
+let li = document.createElement('li');
+li.className = 'folder-node';
+let header = document.createElement('div');
+header.className = `folder-header ${currentCategory === node.id ? 'active' : ''}`;
+header.setAttribute('data-folder-id', node.id);
+// VISUAL CUE: Status Dot (invece dell'occhio) per Sub-Cartelle
+let agentVisIcon = (!isAgent && hasVisibleContentForAgent(node.id)) ? `<div style="width: 6px; height: 6px; border-radius: 50%; background: var(--success); box-shadow: 0 0 6px rgba(16, 185, 129, 0.5); margin-left: 8px; flex-shrink: 0;" title="Contains Agent-Visible Files"></div>` : '';
+
+header.innerHTML = `
+<div class="folder-toggle ${hasChildren ? 'has-children' : ''} ${isOpen ? 'open' : ''}" onclick="toggleFolder(event, '${node.id}')">
+<i class="material-icons" style="font-size: 16px;">${hasChildren ? 'chevron_right' : ''}</i>
+</div>
+<i class="material-icons" style="font-size: 18px;">folder</i>
+<span class="d-flex align-items-center" style="flex:1; overflow:hidden;"><span style="text-overflow:ellipsis; white-space:nowrap; overflow:hidden;">${escapeHTML(node.name)}</span> ${agentVisIcon}</span>
+`;
+header.onclick = (e) => filterCategory(node.id, e.currentTarget);
+if(!isAgent) header.oncontextmenu = (e) => showFolderContextMenu(e, node.id);
+li.appendChild(header);
+let childrenContainer = document.createElement('div');
+childrenContainer.className = `folder-children ${isOpen ? 'open' : ''}`;
+childrenContainer.id = `children-${node.id}`;
+buildFolderTreeChildren(node.id, childrenContainer, depth + 1);
+li.appendChild(childrenContainer);
+container.appendChild(li);
+});
+}
+
+function handleFolderActionFromRoot(action) {
+activeContextFolderId = 'root';
+handleFolderAction(action);
+}
+
+function buildCategoryDropdown(parentId, prefix) {
+let html = '';
+if(parentId === 'root') {
+html += `<option value="root">Master Hub (Root)</option>`;
+let rootChildren = qaCategories.filter(c => c.parentId === 'root');
+rootChildren.forEach(n => {
+html += `<option value="${n.id}">--- ${escapeHTML(n.name)}</option>`;
+html += buildCategoryDropdown(n.id, '------ ');
+});
+} else {
+let nodes = qaCategories.filter(c => c.parentId === parentId);
+nodes.forEach(n => {
+html += `<option value="${n.id}">${prefix}${escapeHTML(n.name)}</option>`;
+html += buildCategoryDropdown(n.id, prefix + '--- ');
+});
+}
+return html;
+}
+
+function getCategoryAndDescendants(parentId) {
+let ids = [parentId];
+qaCategories.filter(c => c.parentId === parentId).forEach(child => {
+ids = ids.concat(getCategoryAndDescendants(child.id));
+});
+return ids;
+}
+
+// --- 5. CRUD OPERATIONS & TAGGING ---
+function openFileModal(id = null) {
+document.getElementById('fileForm').reset();
+document.getElementById('docId').value = '';
+currentTags = [];
+if(document.getElementById('docAgentVisible')) document.getElementById('docAgentVisible').checked = false;
+if(id) {
+const doc = qaDatabase.find(d => d.id === id);
+if(doc) {
+document.getElementById('docId').value = doc.id;
+document.getElementById('docTitle').value = doc.title;
+document.getElementById('docUrl').value = doc.url;
+document.getElementById('docCategory').value = doc.category || 'root';
+document.getElementById('docType').value = doc.type;
+if(document.getElementById('docAgentVisible')) document.getElementById('docAgentVisible').checked = !!doc.isAgentVisible;
+currentTags = doc.tags || [];
+}
+} else {
+document.getElementById('docCategory').value = currentCategory;
+}
+renderTokens('tags');
+fileModal.show();
+}
+
+function saveDocument() {
+const id = document.getElementById('docId').value, title = document.getElementById('docTitle').value, url = document.getElementById('docUrl').value, cat = document.getElementById('docCategory').value, type = document.getElementById('docType').value;
+const isVisibleToAgent = document.getElementById('docAgentVisible') ? document.getElementById('docAgentVisible').checked : false;
+const docPayload = { id: id ? parseInt(id) : Date.now(), title, url, category: cat, type, date: new Date().toISOString().split('T')[0], isAgentVisible: isVisibleToAgent, tags: [...currentTags] };
+if(id) {
+const index = qaDatabase.findIndex(d => d.id == id);
+if(index > -1) Object.assign(qaDatabase[index], docPayload);
+} else {
+qaDatabase.push(docPayload);
+}
+syncToGlobalState();
+fileModal.hide();
+if(document.activeElement) document.activeElement.blur();
+searchFiles();
+renderSidebar();
+showToast("Resource saved successfully!", "success");
+}
+
+function deleteDocument(id) {
+if(confirm("Are you sure you want to delete this resource?")) {
+qaDatabase = qaDatabase.filter(d => d.id !== id);
+syncToGlobalState();
+searchFiles();
+renderSidebar();
+showToast("Resource deleted successfully.", "success");
+}
+}
+
+function handleTokenKeydown(e, type) {
+if (e.key === 'Enter' || e.key === ',') {
+e.preventDefault();
+const val = e.target.value.trim().replace(/,/g, '');
+if (val) {
+const arr = currentTags;
+if (!arr.includes(val.toLowerCase())) {
+arr.push(val.toLowerCase());
+renderTokens(type);
+}
+e.target.value = '';
+}
+}
+}
+
+function renderTokens(type) {
+const arr = currentTags;
+document.getElementById('tagsTokenList').innerHTML = arr.map((t, i) => `<div class="token-chip-item">${escapeHTML(t)} <i class="material-icons" onclick="removeToken('${type}', ${i})">close</i></div>`).join('');
+}
+
+function removeToken(type, index) {
+currentTags.splice(index, 1);
+renderTokens(type);
+}
+</script>

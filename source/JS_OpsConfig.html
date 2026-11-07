@@ -1,0 +1,414 @@
+<style>
+/* =========================================
+* 1. STUDIO DROPDOWN STYLES
+* ========================================= */
+.studio-dropdown-wrapper { position: relative; width: 100%; margin-bottom: 0; }
+.studio-dropdown-header {
+background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-glass, #334155);
+color: #e2e8f0; padding: 10px 16px; border-radius: 8px; cursor: pointer;
+display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem;
+transition: border-color 0.2s, box-shadow 0.2s;
+}
+.studio-dropdown-header:hover { border-color: #d4af37; box-shadow: 0 0 10px rgba(212, 175, 55, 0.2); }
+.studio-dropdown-body {
+position: absolute; top: calc(100% + 4px); left: 0; width: 100%; background: #0f172a;
+border: 1px solid #d4af37; border-radius: 8px; z-index: 1000; box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+display: none; flex-direction: column; overflow: hidden;
+}
+.studio-search-box {
+background: #1e293b; border: none; border-bottom: 1px solid #334155;
+color: #fff; padding: 12px 16px; width: 100%; outline: none; font-size: 0.85rem;
+}
+.studio-search-box:focus { border-bottom-color: #d4af37; }
+.studio-list { max-height: 250px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.studio-list::-webkit-scrollbar { width: 6px; }
+.studio-list::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+.studio-item {
+padding: 10px 16px; font-size: 0.85rem; color: #cbd5e1; cursor: pointer;
+border-bottom: 1px solid rgba(255,255,255,0.02); transition: background 0.2s;
+}
+.studio-item:hover { background: rgba(212, 175, 55, 0.1); color: #d4af37; }
+.studio-item.loader { cursor: default; font-style: italic; color: #64748b; }
+.studio-item-highlight { font-weight: 700; color: #d4af37; }
+
+/* =========================================
+* 2. STUDIO WYSIWYG EDITOR & TOKENS
+* ========================================= */
+.studio-editor-container {
+background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-glass, #334155);
+border-radius: 8px; overflow: hidden; display: flex; flex-direction: column;
+}
+.studio-toolbar {
+background: #1e293b; border-bottom: 1px solid #334155; padding: 8px;
+display: flex; gap: 4px; align-items: center; flex-wrap: wrap;
+}
+.studio-btn {
+background: transparent; border: 1px solid transparent; color: #cbd5e1; border-radius: 4px;
+cursor: pointer; padding: 4px 8px; display: flex; align-items: center; justify-content: center;
+transition: all 0.2s; font-size: 0.8rem;
+}
+.studio-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+.studio-btn-token {
+background: rgba(212, 175, 55, 0.1); border: 1px solid rgba(212, 175, 55, 0.3);
+color: #d4af37; border-radius: 50px; font-size: 0.75rem; font-weight: 600; padding: 2px 10px;
+}
+.studio-btn-token:hover { background: rgba(212, 175, 55, 0.2); border-color: #d4af37; }
+.studio-editable-area {
+min-height: 200px; max-height: 400px; overflow-y: auto; padding: 16px;
+color: #e2e8f0; font-size: 0.9rem; line-height: 1.5; outline: none;
+}
+.studio-editable-area:focus { background: rgba(255,255,255,0.02); }
+.studio-preview-area {
+min-height: 200px; max-height: 400px; overflow-y: auto; padding: 16px;
+background: #0f172a; color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;
+}
+.studio-toolbar-divider { width: 1px; height: 16px; background: #475569; margin: 0 4px; }
+
+/* =========================================
+* 3. ADVANCED SETTINGS & INJECTORS
+* ========================================= */
+.advanced-settings-toggle {
+display: flex; align-items: center; justify-content: space-between;
+padding: 10px 16px; background: rgba(255,255,255,0.02); border: 1px solid var(--border-glass);
+border-radius: 8px; cursor: pointer; color: var(--text-muted); font-size: 0.85rem; font-weight: 700;
+transition: all 0.2s;
+}
+.advanced-settings-toggle:hover { background: rgba(255,255,255,0.05); color: #fff; }
+.advanced-settings-container {
+padding: 16px; border: 1px solid var(--border-glass); border-top: none;
+border-radius: 0 0 8px 8px; background: rgba(0,0,0,0.2);
+}
+.variable-pill {
+display: inline-flex; align-items: center; background: rgba(59, 130, 246, 0.1);
+border: 1px solid rgba(59, 130, 246, 0.3); color: #60a5fa; border-radius: 4px;
+padding: 2px 6px; font-size: 0.7rem; font-family: monospace; cursor: pointer;
+transition: all 0.2s; margin-top: 4px; margin-right: 4px;
+}
+.variable-pill:hover { background: rgba(59, 130, 246, 0.2); color: #fff; }
+</style>
+
+<script>
+/**
+* =========================================
+* FLOWPILOT - WORKFLOW BUILDER
+* Module: Node Configuration Inspector
+* Description: Progressive Disclosure UX, Smart Injectors & Studio Rich Text Editor
+* =========================================
+*/
+
+const OpsConfigSchemas = {
+'TRIGGER_MANUAL': [
+{ id: 'description', label: 'Trigger Note', type: 'text', placeholder: 'Starts when manually executed...' }
+],
+'TRIGGER_CRON': [
+{ id: 'cron', label: 'Cron Expression', type: 'text', placeholder: 'e.g., 0 8 * * 1-5' }
+],
+'TRIGGER_GMAIL_POLLER': [
+{ id: 'query', label: 'Gmail Search Query', type: 'text', placeholder: 'e.g., is:unread label:Escalation' },
+{ id: 'maxResults', label: 'Max Results per Batch', type: 'text', placeholder: 'e.g., 5' }
+],
+'ACTION_EMAIL': [
+{ id: 'to', label: 'Recipient (To)', type: 'text', placeholder: '{{trigger.sender}}', injectVars: ['trigger.sender'] },
+{ id: 'subject', label: 'Subject', type: 'text', placeholder: 'Enter subject...', injectVars: ['trigger.subject'] },
+{ id: 'body', label: 'Email Body (HTML)', type: 'textarea', placeholder: 'Hello...' }
+],
+'ACTION_SHEET': [
+{ id: 'spreadsheetId', label: 'Target Spreadsheet ID', type: 'text' },
+{ id: 'sheetName', label: 'Worksheet Name', type: 'text' },
+{ id: 'rowData', label: 'Row Data (JSON Array format)', type: 'text' }
+],
+'ACTION_PULSE': [
+{ id: 'target', label: 'Target Workflow', type: 'select', options: ['ALL', 'DEMO', 'ONBOARDING'] },
+{ id: 'priority', label: 'Priority Level', type: 'select', options: ['NORMAL', 'URGENT'] },
+{ id: 'message', label: 'Broadcast Message', type: 'textarea' }
+],
+'LOGIC_IF': [
+{ id: 'condition', label: 'Evaluation Expression', type: 'text', injectVars: ['trigger.subject', 'trigger.plainBody'] }
+],
+'LOGIC_REGEX_PARSER': [
+{ id: 'sourceText', label: 'Source Text to Parse', type: 'text', injectVars: ['trigger.plainBody'] },
+{ id: 'key1', label: 'Extraction Key 1', type: 'text' },
+{ id: 'pattern1', label: 'Regex Pattern 1', type: 'text' }
+],
+'ACTION_STUDIO_BATCH': [
+// Campi Base (Required / Core)
+{ id: 'workflowName', label: 'Target Workflow (DB Tab)', type: 'text', placeholder: 'e.g., DEMO_Agents' },
+{ id: 'agentLdap', label: 'Target Agent', type: 'dynamic-agent', placeholder: 'Select Agents...' },
+{ id: 'emailSubject', label: 'Email Subject', type: 'text', placeholder: '{{AGENT_ID}} || Notice || {{DATE}}', injectVars: ['AGENT_ID', 'DATE'] },
+{ id: 'emailBody', label: 'Email Composition', type: 'studio-editor', placeholder: '' },
+// Campi Advanced (Progressive Disclosure)
+{ id: 'targetDate', label: 'Offline Date (YYYY/MM/DD)', type: 'text', placeholder: 'Leave empty for today', advanced: true },
+{ id: 'driveFileId', label: 'Google Drive File URL / ID (Template)', type: 'text', placeholder: 'Paste Template ID', advanced: true },
+{ id: 'destinationFolderId', label: 'Destination Folder URL / ID', type: 'text', placeholder: 'Paste Folder ID', advanced: true },
+{ id: 'ccEmails', label: 'Manager CCs (Comma Separated)', type: 'text', placeholder: 'team@example.invalid', advanced: true },
+{ id: 'explicitThreadId', label: 'Linked Thread', type: 'dynamic-thread', placeholder: 'Select Thread...', advanced: true }
+]
+};
+
+// --- DYNAMIC RPC FETCHER (Agents & Threads) ---
+const OpsDynamicFetcher = {
+cache: { agents: null, threads: null, lastWorkflow: null, lastAgent: null },
+
+toggleDropdown: function(fieldId) {
+const body = document.getElementById('dd-body-' + fieldId);
+if (body.style.display === 'flex') {
+body.style.display = 'none';
+} else {
+document.querySelectorAll('.studio-dropdown-body').forEach(el => el.style.display = 'none');
+body.style.display = 'flex';
+if (fieldId === 'agentLdap') this.loadAgents();
+if (fieldId === 'explicitThreadId') this.loadThreads();
+setTimeout(() => { document.getElementById('dd-search-' + fieldId).focus(); }, 100);
+}
+},
+loadAgents: function() {
+const wfInput = document.getElementById('cfg_workflowName');
+const list = document.getElementById('dd-list-agentLdap');
+if (!wfInput || !wfInput.value) {
+list.innerHTML = '<li class="studio-item loader text-warning">Define Workflow Name first.</li>'; return;
+}
+if (this.cache.agents && this.cache.lastWorkflow === wfInput.value) {
+this.renderAgentList(this.cache.agents); return;
+}
+list.innerHTML = '<li class="studio-item loader">Fetching agents...</li>';
+google.script.run.withSuccessHandler(function(agents) {
+OpsDynamicFetcher.cache.agents = agents; OpsDynamicFetcher.cache.lastWorkflow = wfInput.value;
+OpsDynamicFetcher.renderAgentList(agents);
+}).getAgentsForDropdown(wfInput.value);
+},
+renderAgentList: function(agents) {
+const list = document.getElementById('dd-list-agentLdap');
+if (!agents || agents.length === 0) { list.innerHTML = '<li class="studio-item loader text-warning">No agents found.</li>'; return; }
+let html = '';
+agents.forEach(a => { html += `<li class="studio-item" onclick="OpsDynamicFetcher.selectOption('agentLdap', '${a.id}', '${a.name} (${a.id})')"><span class="studio-item-highlight">${a.id}</span> - ${a.name}</li>`; });
+list.innerHTML = html;
+},
+loadThreads: function() {
+const wfInput = document.getElementById('cfg_workflowName');
+const hiddenAgentInput = document.getElementById('cfg_agentLdap');
+const list = document.getElementById('dd-list-explicitThreadId');
+if (!hiddenAgentInput || !hiddenAgentInput.value) { list.innerHTML = '<li class="studio-item loader text-warning">Select an Agent first.</li>'; return; }
+list.innerHTML = '<li class="studio-item loader">Scanning Gmail...</li>';
+google.script.run.withSuccessHandler(function(agents) {
+const agent = agents.find(a => a.id === hiddenAgentInput.value.trim());
+if (!agent) { list.innerHTML = '<li class="studio-item loader text-warning">Agent email not resolved.</li>'; return; }
+google.script.run.withSuccessHandler(function(threads) {
+let html = `<li class="studio-item" onclick="OpsDynamicFetcher.selectOption('explicitThreadId', 'NEW', '[NEW] Create Standalone Thread')"><span class="studio-item-highlight" style="color:var(--success);">[NEW] Create Standalone Thread</span></li>`;
+if (threads && threads.length > 0) {
+threads.forEach(t => { html += `<li class="studio-item" onclick="OpsDynamicFetcher.selectOption('explicitThreadId', '${t.id}', '[${t.date}] ${t.subject}')"><span class="studio-item-highlight">[${t.date}]</span> ${t.subject}</li>`; });
+}
+list.innerHTML = html;
+}).getThreadsForDropdown(agent.email);
+}).getAgentsForDropdown(wfInput.value);
+},
+selectOption: function(fieldId, realValue, displayValue) {
+document.getElementById('cfg_' + fieldId).value = realValue;
+document.getElementById('dd-header-text-' + fieldId).innerText = displayValue;
+document.getElementById('dd-body-' + fieldId).style.display = 'none';
+if(fieldId === 'agentLdap') {
+const threadHidden = document.getElementById('cfg_explicitThreadId');
+if(threadHidden) { threadHidden.value = ''; document.getElementById('dd-header-text-explicitThreadId').innerText = 'Select Thread...'; }
+}
+},
+filterList: function(fieldId) {
+const filter = document.getElementById('dd-search-' + fieldId).value.toLowerCase();
+document.querySelectorAll('#dd-list-' + fieldId + ' li.studio-item:not(.loader)').forEach(item => {
+item.style.display = (item.textContent || item.innerText).toLowerCase().indexOf(filter) > -1 ? "" : "none";
+});
+}
+};
+
+// --- STUDIO WYSIWYG EDITOR MODULE ---
+const OpsEditor = {
+format: function(command, value = null) {
+document.execCommand(command, false, value);
+this.sync('emailBody');
+},
+insertLink: function() {
+const url = prompt("Enter URL (or {{FILE_URL}}):");
+if(url) this.format('createLink', url);
+},
+insertToken: function(token) {
+const editor = document.getElementById('editor_emailBody');
+editor.focus();
+document.execCommand('insertText', false, token);
+this.sync('emailBody');
+},
+sync: function(fieldId) {
+const html = document.getElementById('editor_' + fieldId).innerHTML;
+document.getElementById('cfg_' + fieldId).value = html;
+},
+togglePreview: function(fieldId) {
+const editor = document.getElementById('editor_' + fieldId);
+const preview = document.getElementById('preview_' + fieldId);
+const btn = document.getElementById('btn_preview_' + fieldId);
+if (editor.style.display !== 'none') {
+editor.style.display = 'none';
+preview.style.display = 'block';
+btn.innerHTML = '<i class="material-icons" style="font-size:14px; margin-right:4px;">edit</i> Build Mode';
+btn.classList.add('forge-btn-success');
+let rawHtml = document.getElementById('cfg_' + fieldId).value;
+rawHtml = rawHtml
+.replace(/{{AGENT_NAME}}/g, '<span style="color:#d4af37; font-weight:bold; background:rgba(212,175,55,0.1); padding:0 4px; border-radius:4px;">John Doe</span>')
+.replace(/{{AGENT_ID}}/g, '<span style="color:#d4af37; font-weight:bold; background:rgba(212,175,55,0.1); padding:0 4px; border-radius:4px;">jdoe123</span>')
+.replace(/{{DATE}}/g, '<span style="color:#d4af37; font-weight:bold; background:rgba(212,175,55,0.1); padding:0 4px; border-radius:4px;">01/09/2026</span>')
+.replace(/href=["']{{FILE_URL}}["']/g, 'href="#"')
+.replace(/{{FILE_URL}}/g, '<a href="#" style="color:#3b82f6; text-decoration:underline; font-weight:bold;">Offline Day File</a>');
+preview.innerHTML = '<div class="text-muted small mb-2 pb-2 border-bottom" style="border-color:#334155!important;">LIVE REAL-TIME PREVIEW (SIMULATED)</div>' + rawHtml;
+} else {
+editor.style.display = 'block';
+preview.style.display = 'none';
+btn.innerHTML = '<i class="material-icons" style="font-size:14px; margin-right:4px;">visibility</i> Live Preview';
+btn.classList.remove('forge-btn-success');
+}
+}
+};
+
+// --- VARIABLE INJECTOR ---
+window.injectVariableToInput = function(fieldId, variableString) {
+const input = document.getElementById('cfg_' + fieldId);
+if (!input) return;
+const start = input.selectionStart || input.value.length;
+const end = input.selectionEnd || input.value.length;
+input.value = input.value.substring(0, start) + '{{' + variableString + '}}' + input.value.substring(end);
+input.focus();
+};
+
+window.toggleAdvancedSettings = function() {
+const container = document.getElementById('advancedSettingsContainer');
+const icon = document.getElementById('advancedSettingsIcon');
+if (container.style.display === 'none') {
+container.style.display = 'block';
+icon.innerText = 'expand_less';
+} else {
+container.style.display = 'none';
+icon.innerText = 'expand_more';
+}
+};
+
+// --- CORE UI RENDERER ---
+window.openNodeConfig = function(nodeId) {
+if (!window.OpsCanvas) return;
+const node = OpsCanvas.state.nodes.find(n => n.id === nodeId);
+if (!node) return;
+
+OpsCanvas.state.activeConfigNode = nodeId;
+const meta = OpsCanvas.nodeTypes[node.type] || { label: 'Node', icon: 'extension' };
+const schema = OpsConfigSchemas[node.type] || [];
+
+document.getElementById('configNodeTitle').innerText = meta.label;
+document.getElementById('configNodeIcon').innerText = meta.icon;
+let html = '<div class="mb-3 p-3 rounded" style="background: rgba(var(--primary-rgb), 0.1); border: 1px dashed var(--primary);"><span class="text-primary font-code fw-bold">NODE ID: ' + node.id + '</span></div>';
+const escapeHTML = (str) => String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const normalFields = schema.filter(f => !f.advanced);
+const advancedFields = schema.filter(f => f.advanced);
+
+const renderField = function(field) {
+let val = node.parameters[field.id] || '';
+let displayVal = escapeHTML(val) || field.placeholder;
+let fieldHtml = '<div class="mb-4">';
+fieldHtml += '<label class="form-label text-muted small fw-bold text-uppercase" style="color: #d4af37 !important;">' + field.label + '</label>';
+if (field.type === 'studio-editor') {
+fieldHtml += `<input type="hidden" id="cfg_${field.id}" value="${escapeHTML(val)}">
+<div class="studio-editor-container">
+<div class="studio-toolbar">
+<button type="button" class="studio-btn" onclick="OpsEditor.format('bold')" title="Bold"><i class="material-icons" style="font-size:16px;">format_bold</i></button>
+<button type="button" class="studio-btn" onclick="OpsEditor.format('italic')" title="Italic"><i class="material-icons" style="font-size:16px;">format_italic</i></button>
+<button type="button" class="studio-btn" onclick="OpsEditor.format('underline')" title="Underline"><i class="material-icons" style="font-size:16px;">format_underlined</i></button>
+<div class="studio-toolbar-divider"></div>
+<button type="button" class="studio-btn" onclick="OpsEditor.insertLink()" title="Link"><i class="material-icons" style="font-size:16px;">link</i></button>
+<div class="studio-toolbar-divider"></div>
+<button type="button" class="studio-btn studio-btn-token" onclick="OpsEditor.insertToken('{{AGENT_NAME}}')"><i class="material-icons" style="font-size:12px; margin-right:4px;">person</i> Agent Name</button>
+<button type="button" class="studio-btn studio-btn-token" onclick="OpsEditor.insertToken('{{AGENT_ID}}')"><i class="material-icons" style="font-size:12px; margin-right:4px;">badge</i> Agent LDAP</button>
+<button type="button" class="studio-btn studio-btn-token" onclick="OpsEditor.insertToken('{{DATE}}')"><i class="material-icons" style="font-size:12px; margin-right:4px;">event</i> Offline Date</button>
+<button type="button" class="studio-btn studio-btn-token" onclick="OpsEditor.insertToken('{{FILE_URL}}')"><i class="material-icons" style="font-size:12px; margin-right:4px;">attachment</i> File Link</button>
+<div style="flex-grow:1;"></div>
+<button type="button" id="btn_preview_${field.id}" class="studio-btn" onclick="OpsEditor.togglePreview('${field.id}')" style="border:1px solid #334155;"><i class="material-icons" style="font-size:14px; margin-right:4px;">visibility</i> Live Preview</button>
+</div>
+<div id="editor_${field.id}" class="studio-editable-area" contenteditable="true" oninput="OpsEditor.sync('${field.id}')">${val}</div>
+<div id="preview_${field.id}" class="studio-preview-area" style="display:none;"></div>
+</div>`;
+} else if (field.type === 'dynamic-agent' || field.type === 'dynamic-thread') {
+fieldHtml += `<input type="hidden" id="cfg_${field.id}" value="${escapeHTML(val)}">
+<div class="studio-dropdown-wrapper" id="dd-wrapper-${field.id}">
+<div class="studio-dropdown-header" onclick="OpsDynamicFetcher.toggleDropdown('${field.id}')">
+<span id="dd-header-text-${field.id}" style="text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${displayVal}</span>
+<i class="material-icons" style="color:#d4af37; font-size:16px;">keyboard_arrow_down</i>
+</div>
+<div class="studio-dropdown-body" id="dd-body-${field.id}">
+<input type="text" class="studio-search-box" id="dd-search-${field.id}" placeholder="Search..." onkeyup="OpsDynamicFetcher.filterList('${field.id}')">
+<ul class="studio-list" id="dd-list-${field.id}"></ul>
+</div>
+</div>`;
+} else if (field.type === 'textarea') {
+fieldHtml += `<textarea id="cfg_${field.id}" class="glass-input m-0" rows="4" placeholder="${field.placeholder}">${escapeHTML(val)}</textarea>`;
+} else if (field.type === 'select') {
+fieldHtml += `<select id="cfg_${field.id}" class="form-select glass-input m-0">`;
+field.options.forEach(opt => { fieldHtml += `<option value="${opt}" ${val === opt ? 'selected' : ''}>${opt}</option>`; });
+fieldHtml += `</select>`;
+} else {
+fieldHtml += `<input type="text" id="cfg_${field.id}" class="form-control glass-input m-0" placeholder="${field.placeholder}" value="${escapeHTML(val)}">`;
+if (field.injectVars) {
+fieldHtml += `<div>`;
+field.injectVars.forEach(v => {
+fieldHtml += `<span class="variable-pill" onclick="injectVariableToInput('${field.id}', '${v}')">+ ${v}</span>`;
+});
+fieldHtml += `</div>`;
+}
+}
+fieldHtml += '</div>';
+return fieldHtml;
+};
+
+// Rendering Campi Normali
+normalFields.forEach(f => { html += renderField(f); });
+
+// Rendering Campi Advanced (Progressive Disclosure)
+if (advancedFields.length > 0) {
+html += `<div class="advanced-settings-toggle mt-4" onclick="toggleAdvancedSettings()">
+<span class="d-flex align-items-center gap-2"><i class="material-icons" style="font-size:18px;">tune</i> Advanced Settings</span>
+<i class="material-icons" id="advancedSettingsIcon">expand_more</i>
+</div>
+<div class="advanced-settings-container" id="advancedSettingsContainer" style="display:none;">`;
+advancedFields.forEach(f => { html += renderField(f); });
+html += `</div>`;
+}
+
+document.getElementById('opsNodeConfigBody').innerHTML = html;
+document.getElementById('opsNodeSideSheet').classList.add('open');
+};
+
+window.closeNodeConfig = function() {
+document.getElementById('opsNodeSideSheet').classList.remove('open');
+document.querySelectorAll('.studio-dropdown-body').forEach(el => el.style.display = 'none');
+if (window.OpsCanvas) { OpsCanvas.state.activeConfigNode = null; OpsCanvas.renderNodes(); }
+};
+
+window.saveNodeConfig = function() {
+if (!window.OpsCanvas || !OpsCanvas.state.activeConfigNode) return;
+const node = OpsCanvas.state.nodes.find(n => n.id === OpsCanvas.state.activeConfigNode);
+if (!node) return;
+const schema = OpsConfigSchemas[node.type] || [];
+if (!node.parameters) node.parameters = {};
+schema.forEach(field => {
+const el = document.getElementById('cfg_' + field.id);
+if (el) node.parameters[field.id] = el.value;
+});
+if (typeof window.showToast === 'function') window.showToast("Configuration saved.", "success");
+window.closeNodeConfig();
+OpsCanvas.saveState();
+};
+
+window.deleteCurrentNode = function() {
+if (!window.OpsCanvas || !OpsCanvas.state.activeConfigNode) return;
+OpsCanvas.deleteNode(OpsCanvas.state.activeConfigNode);
+window.closeNodeConfig();
+};
+
+document.addEventListener('click', function(e) {
+if (!e.target.closest('.studio-dropdown-wrapper')) {
+document.querySelectorAll('.studio-dropdown-body').forEach(el => el.style.display = 'none');
+}
+});
+</script>

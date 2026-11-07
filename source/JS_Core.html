@@ -1,0 +1,987 @@
+<script>
+/**
+* =========================================
+* FLOWPILOT CLIENT-SIDE ENGINE (V8 FRONTEND)
+* Module: Core (State, Bootstrapping, Sync, Utils)
+* Pipeline: Defensive Parsing, Dashboard UI & Lens Image Interceptor
+* Patch: Sandbox Isolation Fix, Syntax Encoding Safety, Role Routing Fix & OPS Optimization
+* =========================================
+*/
+
+// --- 1. GLOBAL STATE & THEME ---
+const DEFAULT_TASKS = ["Content Review", "Knowledge Article Update", "Weekly Insights", "Team Onboarding", "Workflow Check", "Resource Catalog", "Demo Quality Review", "Support Handoff"];
+const DEFAULT_POLICIES = [
+"Hate Speech", "Harassment", "PI&I", "Dangerous Content", "No Violation", "Medical Advice"
+];
+
+let currentTheme = localStorage.getItem('ops_theme_' + APP_TEAM) || 'dark';
+let isAgent = APP_TEAM === 'AGENT';
+let isAppBooting = true;
+let isDashboardEditMode = false;
+
+let qaDatabase = [], qaCategories = [], pocDatabase = [], qaNamesList = [], taskLinksDatabase = {};
+let knowledgeChannels = ['General KB', 'Team Guides', 'Release Notes'];
+let targetWorkflows = ["DEMO", "SUPPORT", "ONBOARDING", "OPERATIONS", "INSIGHTS", "AUTOMATION"];
+let pulseBroadcasts = [];
+
+let workflowPolicies = {};
+let workflowTasks = {};
+let appTasks = [];
+let predefinedPolicies = [];
+
+let currentTags = [];
+let currentCategory = 'root';
+let expandedFolders = new Set(['root']);
+let activeContextFolderId = null;
+let activeContextFileId = null;
+let isListView = localStorage.getItem('qaDEMO_View_' + APP_TEAM) === 'list';
+let currentScheduleDate = new Date();
+
+let kbMetricsCache = {};
+let quickPins = [];
+
+let state = {
+tabs: [], headers: [], fullData: [], cachedSheet: null, currentPage: 1, totalPages: 1,
+cart: [], hiddenColumns: new Set(), activeFilters: {}, activeWorkflow: 'DEMO',
+editingCartIndex: null, pendingMap: null, specificRowId: null,
+isFiltered: false
+};
+let currentMultiSearchResults = [], currentSearchQuery = "";
+let publishedSlidesDb = [];
+let lastFocusedTextarea = null;
+let activeBotEditTarget = null;
+let currentCardPolicies = new Set();
+
+let agentAlignmentsData = [];
+let activeVerdictFilter = 'ALL';
+let activeAgentChannel = 'General KB';
+let isCompactMode = false;
+let aclDataCache = {};
+
+let fileModal, pocModalObj, slideExpandModalObj, botResponseExpandedModalObj, masterSettingsModalObj;
+
+// --- 2. BOOTSTRAPPING & GLOBAL LISTENERS ---
+document.addEventListener('DOMContentLoaded', function() {
+applyTheme();
+document.body.style.opacity = '0.5';
+isAppBooting = true;
+if (typeof window.initContextMenus === 'function') window.initContextMenus();
+const lastUrl = localStorage.getItem('studio_last_url');
+if (lastUrl && document.getElementById('sourceId')) {
+document.getElementById('sourceId').value = lastUrl;
+}
+if (!isAgent) {
+fileModal = new bootstrap.Modal(document.getElementById('fileModal'));
+pocModalObj = new bootstrap.Modal(document.getElementById('pocModal'));
+const settingsModalEl = document.getElementById('masterSettingsModal');
+if (settingsModalEl) masterSettingsModalObj = new bootstrap.Modal(settingsModalEl);
+const slideDateInput = document.getElementById('slideDate');
+if (slideDateInput) slideDateInput.valueAsDate = new Date();
+['val-user', 'val-bot', 'val-explanation', 'val-description'].forEach(function(id) {
+const el = document.getElementById(id);
+if (el) {
+el.addEventListener('focus', function() { lastFocusedTextarea = el; });
+}
+});
+
+const dynCategories = document.getElementById('dynamicCategories');
+if (dynCategories) {
+dynCategories.addEventListener('dragover', handleFolderDragOver);
+dynCategories.addEventListener('dragleave', handleFolderDragLeave);
+dynCategories.addEventListener('drop', handleFolderDrop);
+}
+const suitcaseView = document.getElementById('view-suitcase');
+if (suitcaseView) {
+suitcaseView.addEventListener('dragover', handleMainAreaDragOver);
+suitcaseView.addEventListener('dragleave', handleMainAreaDragLeave);
+suitcaseView.addEventListener('drop', handleMainAreaDrop);
+}
+
+const welcomeView = document.getElementById('view-welcome');
+if (welcomeView) {
+welcomeView.addEventListener('contextmenu', handleDashboardContextMenu);
+}
+}
+
+slideExpandModalObj = new bootstrap.Modal(document.getElementById('slideExpandModal'));
+const botResModalEl = document.getElementById('botResponseExpandedModal');
+if (botResModalEl) botResponseExpandedModalObj = new bootstrap.Modal(botResModalEl);
+
+if (isAgent) {
+window.switchView('welcome', document.getElementById('menu-welcome'));
+loadMasterAppData('QA');
+if (typeof window.loadAgentAlignments === 'function') window.loadAgentAlignments();
+} else {
+window.switchView('welcome', document.getElementById('menu-welcome'));
+loadMasterAppData(APP_TEAM);
+if (['QA', 'TL'].includes(APP_TEAM)) {
+if (typeof window.loadPublishedDbForQA === 'function') window.loadPublishedDbForQA();
+if (typeof window.loadAgentAlignments === 'function') window.loadAgentAlignments();
+}
+}
+loadPulseBroadcasts();
+loadQuickPins();
+
+const bootstrapModals = ['fileModal', 'masterSettingsModal', 'pocModal', 'slideExpandModal', 'botResponseExpandedModal', 'quickPinModal'];
+bootstrapModals.forEach(function(modalId) {
+const modalEl = document.getElementById(modalId);
+if (modalEl) {
+modalEl.addEventListener('hide.bs.modal', function () {
+if (document.activeElement && modalEl.contains(document.activeElement)) {
+document.activeElement.blur();
+document.body.focus();
+}
+});
+modalEl.addEventListener('hidden.bs.modal', function () {
+if (document.activeElement && modalEl.contains(document.activeElement)) {
+document.activeElement.blur();
+}
+});
+}
+});
+
+window.onclick = function(event) {
+if (event.target == document.getElementById('inspectorModal')) window.closeModal('inspectorModal');
+if (event.target == document.getElementById('columnModal')) window.closeModal('columnModal');
+if (event.target == document.getElementById('settingsModal')) window.closeModal('settingsModal');
+if (event.target == document.getElementById('searchResultsModal')) window.closeModal('searchResultsModal');
+if (event.target == document.getElementById('aclModal')) window.closeModal('aclModal');
+if (!event.target.closest('.search-box') && !event.target.closest('.filter-popup')) {
+if (typeof window.closeSearchMenu === 'function') window.closeSearchMenu();
+}
+if (!event.target.closest('.task-name-cell') && !event.target.closest('.task-bubble')) {
+const bubble = document.getElementById('taskBubble');
+if(bubble) bubble.classList.remove('visible');
+}
+window.closePinContextMenu();
+window.closeDashboardContextMenu();
+};
+document.addEventListener('keydown', function(e) {
+if(e.key === 'Escape') window.closeLightbox();
+});
+});
+
+document.addEventListener('mousemove', function(e) {
+const welcomeView = document.getElementById('view-welcome');
+if (welcomeView && welcomeView.classList.contains('active')) {
+const rect = welcomeView.getBoundingClientRect();
+const x = e.clientX - rect.left;
+const y = e.clientY - rect.top;
+welcomeView.style.setProperty('--mouse-x', x + 'px');
+welcomeView.style.setProperty('--mouse-y', y + 'px');
+}
+});
+
+// --- 3. DATA SYNCHRONIZATION & AUTO-MIGRATION ENGINE ---
+function autoMigrateFolders() {
+if (qaCategories.length === 0) {
+qaCategories = [{ id: 'root', name: 'Master Hub', parentId: null }];
+} else if (qaCategories.length > 0 && typeof qaCategories[0] === 'string') {
+let newCats = [{ id: 'root', name: 'Master Hub', parentId: null }];
+let idMap = { 'All': 'root', 'Uncategorized': 'root' };
+qaCategories.forEach(function(c, i) {
+if (c !== 'All' && c !== 'Uncategorized') {
+let nid = 'cat_' + Date.now() + '_' + i;
+newCats.push({ id: nid, name: c, parentId: 'root' });
+idMap[c] = nid;
+}
+});
+qaDatabase.forEach(function(d) {
+d.category = idMap[d.category] || 'root';
+});
+qaCategories = newCats;
+if(!isAgent) syncToGlobalState();
+}
+let validIds = new Set(qaCategories.map(function(c) { return c.id; }));
+let needsSync = false;
+qaDatabase.forEach(function(d) {
+if (!validIds.has(d.category)) {
+d.category = 'root';
+needsSync = true;
+}
+});
+if(needsSync && !isAgent) syncToGlobalState();
+}
+
+window.updateActiveWorkflowData = function(wf) {
+state.activeWorkflow = wf;
+if (!workflowTasks[wf]) workflowTasks[wf] = [];
+if (!workflowPolicies[wf]) workflowPolicies[wf] = [];
+appTasks = workflowTasks[wf];
+predefinedPolicies = workflowPolicies[wf];
+loadPulseBroadcasts();
+}
+
+function loadPulseBroadcasts() {
+const wf = state.activeWorkflow || 'DEMO';
+google.script.run.withSuccessHandler(function(res) {
+if (res && res.success) {
+pulseBroadcasts = res.data || [];
+if (typeof window.renderPulseBroadcasts === 'function') window.renderPulseBroadcasts();
+}
+}).fetchBroadcasts(wf);
+}
+
+function loadMasterAppData(teamTarget) {
+google.script.run.withSuccessHandler(function(serverData) {
+let needsSync = false;
+
+if(serverData) {
+qaDatabase = serverData.db || [];
+pocDatabase = serverData.pocs || [];
+qaCategories = serverData.cats || [];
+qaNamesList = serverData.qas || [];
+taskLinksDatabase = serverData.links || {};
+knowledgeChannels = serverData.channels || ['General KB', 'Team Guides', 'Release Notes'];
+targetWorkflows = serverData.workflows || ["DEMO", "SUPPORT", "ONBOARDING", "OPERATIONS", "INSIGHTS", "AUTOMATION"];
+workflowPolicies = serverData.workflowPolicies || {};
+workflowTasks = serverData.workflowTasks || {};
+
+targetWorkflows.forEach(function(wf) {
+if (!workflowPolicies[wf]) {
+workflowPolicies[wf] = serverData.policies ? [].concat(serverData.policies) : [].concat(DEFAULT_POLICIES);
+needsSync = true;
+}
+if (!workflowTasks[wf]) {
+workflowTasks[wf] = serverData.tasks ? [].concat(serverData.tasks) : (teamTarget === 'QA' ? [].concat(DEFAULT_TASKS) : []);
+needsSync = true;
+}
+});
+
+window.updateActiveWorkflowData(targetWorkflows[0]);
+autoMigrateFolders();
+if(needsSync && !isAgent) syncToGlobalState();
+} else {
+knowledgeChannels = ['General KB', 'Team Guides', 'Release Notes'];
+targetWorkflows = ["DEMO", "SUPPORT", "ONBOARDING", "OPERATIONS", "INSIGHTS", "AUTOMATION"];
+qaCategories = [{ id: 'root', name: 'Master Hub', parentId: null }];
+targetWorkflows.forEach(function(wf) {
+workflowPolicies[wf] = [].concat(DEFAULT_POLICIES);
+workflowTasks[wf] = teamTarget === 'QA' ? [].concat(DEFAULT_TASKS) : [];
+});
+window.updateActiveWorkflowData(targetWorkflows[0]);
+if (!isAgent) syncToGlobalState();
+}
+if (typeof window.renderWorkflowDropdowns === 'function') window.renderWorkflowDropdowns();
+if(!isAgent) {
+if (typeof window.updateViewToggleIcon === 'function') window.updateViewToggleIcon();
+if (typeof window.updateScheduleMonthDisplay === 'function') window.updateScheduleMonthDisplay();
+if (typeof window.updateTaskSelectDropdown === 'function') window.updateTaskSelectDropdown();
+if (typeof window.updateQaDatalist === 'function') window.updateQaDatalist();
+if (typeof window.renderPOCs === 'function') window.renderPOCs();
+if (typeof window.initPolicyChips === 'function') window.initPolicyChips('');
+if (typeof window.filterCategory === 'function') window.filterCategory('root');
+}
+if (typeof window.renderSidebar === 'function') window.renderSidebar();
+if (typeof window.searchFiles === 'function') window.searchFiles();
+// PATCH: Isola i Channels e le Metriche per il ruolo OPS (che non possiede tali View)
+if (APP_TEAM !== 'OPS') {
+if (typeof window.renderChannelsSidebar === 'function') window.renderChannelsSidebar();
+if (knowledgeChannels.indexOf(activeAgentChannel) === -1 && knowledgeChannels.length > 0) {
+activeAgentChannel = knowledgeChannels[0];
+if (typeof window.switchAgentChannel === 'function') window.switchAgentChannel(activeAgentChannel);
+}
+fetchKbMetrics();
+}
+
+if (isAppBooting) {
+setTimeout(function() {
+window.switchView('welcome', document.getElementById('menu-welcome'));
+isAppBooting = false;
+document.body.style.opacity = '1';
+}, 50);
+} else {
+document.body.style.opacity = '1';
+}
+}).loadGlobalData(teamTarget);
+}
+
+function fetchKbMetrics() {
+if (APP_TEAM === 'OPS') return;
+google.script.run.withSuccessHandler(function(res) {
+if (res && res.success) {
+kbMetricsCache = res.data || {};
+if (typeof window.renderChannelsSidebar === 'function') window.renderChannelsSidebar();
+}
+}).getKnowledgeMetrics();
+}
+
+function syncToGlobalState() {
+const payload = {
+db: qaDatabase, pocs: pocDatabase, cats: qaCategories, qas: qaNamesList,
+links: taskLinksDatabase, channels: knowledgeChannels,
+workflows: targetWorkflows, workflowPolicies: workflowPolicies, workflowTasks: workflowTasks
+};
+google.script.run.withFailureHandler(function(err) { console.error("Sync Error:", err); }).saveGlobalData(JSON.stringify(payload), APP_TEAM);
+}
+
+window.triggerCloudSync = function() {
+window.showToast("Starting cloud backup...", "info");
+const payload = {
+db: qaDatabase, pocs: pocDatabase, cats: qaCategories, qas: qaNamesList,
+links: taskLinksDatabase, channels: knowledgeChannels,
+workflows: targetWorkflows, workflowPolicies: workflowPolicies, workflowTasks: workflowTasks
+};
+google.script.run.withSuccessHandler(function(res) {
+if(res.status === 'success') window.showToast(res.message, "success");
+else window.showToast(res.message, "error");
+}).syncDataToCloud(JSON.stringify(payload), APP_TEAM);
+}
+
+// --- 4. CORE UI UTILITIES ---
+
+window.handleSearch = function(e) {
+if (e.key === 'Enter') {
+e.preventDefault();
+const query = (e.target.value || "").trim().toLowerCase();
+currentSearchQuery = query;
+state.currentPage = 1;
+
+if (!window._forgeUnfilteredData || (!state.isFiltered && state.fullData && state.fullData.length > 0)) {
+window._forgeUnfilteredData = state.fullData ? [].concat(state.fullData) : [];
+}
+
+if (query === "") {
+if (window._forgeUnfilteredData) {
+state.fullData = [].concat(window._forgeUnfilteredData);
+}
+state.isFiltered = false;
+} else {
+if (window._forgeUnfilteredData) {
+state.fullData = window._forgeUnfilteredData.filter(function(row) {
+return row.cells && row.cells.some(function(cell) {
+return cell && cell.toString().toLowerCase().includes(query);
+});
+});
+state.isFiltered = true;
+}
+}
+
+if (typeof window.changePage === 'function') {
+window.changePage(0);
+} else {
+window.showToast("Ricerca applicata in memoria.", "info");
+}
+if (document.activeElement) document.activeElement.blur();
+}
+}
+
+window.openLightbox = function(src) {
+const overlay = document.getElementById('flowpilotLightbox');
+const img = document.getElementById('lightboxImage');
+if(overlay && img) {
+img.src = src;
+overlay.classList.add('active');
+}
+}
+
+window.closeLightbox = function() {
+const overlay = document.getElementById('flowpilotLightbox');
+if(overlay) overlay.classList.remove('active');
+}
+
+// --- GLOBAL DASHBOARD (QUICK PINS) ENGINE ---
+
+function loadQuickPins() {
+google.script.run.withSuccessHandler(function(res) {
+if (res && res.success) {
+quickPins = res.data || [];
+renderQuickPins();
+}
+}).getPinsData();
+}
+
+window.handleDashboardContextMenu = function(e) {
+if (e.target.closest('.quick-pin-slot')) return;
+e.preventDefault();
+e.stopPropagation();
+window.closePinContextMenu();
+
+let menu = document.getElementById('dashboardContextMenu');
+if (!menu) {
+menu = document.createElement('div');
+menu.id = 'dashboardContextMenu';
+menu.className = 'glass-input';
+menu.style.position = 'absolute';
+menu.style.zIndex = '1080';
+menu.style.padding = '8px';
+menu.style.borderRadius = '12px';
+menu.style.width = '200px';
+menu.style.display = 'flex';
+menu.style.flexDirection = 'column';
+menu.style.gap = '4px';
+menu.style.background = 'var(--surface-glass)';
+menu.style.border = '1px solid var(--border-glass)';
+menu.style.backdropFilter = 'blur(10px)';
+menu.style.boxShadow = '0 10px 30px rgba(0,0,0,0.5)';
+document.body.appendChild(menu);
+}
+
+const modeText = isDashboardEditMode ? "Lock Dashboard" : "Edit Dashboard";
+const modeIcon = isDashboardEditMode ? "lock" : "edit";
+const modeColor = isDashboardEditMode ? "var(--warning)" : "var(--primary)";
+
+menu.innerHTML =
+'<button class="forge-btn forge-btn-ghost text-start px-3 py-2 w-100" onclick="window.toggleDashboardEditMode()"><i class="material-icons align-middle me-2" style="font-size:16px; color:' + modeColor + ';">' + modeIcon + '</i> ' + modeText + '</button>';
+
+let x = e.pageX;
+let y = e.pageY;
+if (x + 210 > window.innerWidth) x -= 210;
+if (y + 60 > window.innerHeight) y -= 60;
+
+menu.style.left = x + 'px';
+menu.style.top = y + 'px';
+menu.style.display = 'flex';
+}
+
+window.closeDashboardContextMenu = function() {
+const menu = document.getElementById('dashboardContextMenu');
+if (menu) menu.style.display = 'none';
+}
+
+window.toggleDashboardEditMode = function() {
+isDashboardEditMode = !isDashboardEditMode;
+window.closeDashboardContextMenu();
+renderQuickPins();
+window.showToast(isDashboardEditMode ? "Dashboard Edit Mode: ON" : "Dashboard Edit Mode: OFF", "info");
+}
+
+window.handlePinContextMenu = function(e, pinId) {
+e.preventDefault();
+e.stopPropagation();
+window.closeDashboardContextMenu();
+
+let menu = document.getElementById('pinContextMenu');
+if (!menu) {
+menu = document.createElement('div');
+menu.id = 'pinContextMenu';
+menu.className = 'glass-input';
+menu.style.position = 'absolute';
+menu.style.zIndex = '1080';
+menu.style.padding = '8px';
+menu.style.borderRadius = '12px';
+menu.style.width = '220px';
+menu.style.display = 'flex';
+menu.style.flexDirection = 'column';
+menu.style.gap = '4px';
+menu.style.background = 'var(--surface-glass)';
+menu.style.border = '1px solid var(--border-glass)';
+menu.style.backdropFilter = 'blur(10px)';
+menu.style.boxShadow = '0 10px 30px rgba(0,0,0,0.5)';
+document.body.appendChild(menu);
+}
+
+const pin = quickPins.find(function(p) { return p.id === pinId; });
+if (!pin) return;
+
+const visText = pin.agentVisible ? "Hide from Agents" : "Show to Agents";
+const visIcon = pin.agentVisible ? "visibility_off" : "visibility";
+const visColor = pin.agentVisible ? "color: var(--warning);" : "color: var(--success);";
+
+menu.innerHTML =
+'<button class="forge-btn forge-btn-ghost text-start px-3 py-2 w-100" onclick="window.editQuickPinMenu(\'' + pinId + '\')"><i class="material-icons align-middle me-2" style="font-size:16px; color:var(--primary);">edit</i> Edit Pin</button>' +
+'<button class="forge-btn forge-btn-ghost text-start px-3 py-2 w-100" onclick="window.togglePinVisibilityMenu(\'' + pinId + '\')"><i class="material-icons align-middle me-2" style="font-size:16px; ' + visColor + '">' + visIcon + '</i> ' + visText + '</button>' +
+'<div style="height:1px; background:var(--border-glass); margin: 4px 0;"></div>' +
+'<button class="forge-btn forge-btn-ghost text-danger text-start px-3 py-2 w-100" onclick="window.deleteQuickPinMenu(\'' + pinId + '\')"><i class="material-icons align-middle me-2" style="font-size:16px;">delete</i> Delete</button>';
+
+let x = e.pageX;
+let y = e.pageY;
+if (x + 230 > window.innerWidth) x -= 230;
+if (y + 160 > window.innerHeight) y -= 160;
+
+menu.style.left = x + 'px';
+menu.style.top = y + 'px';
+menu.style.display = 'flex';
+}
+
+window.closePinContextMenu = function() {
+const menu = document.getElementById('pinContextMenu');
+if (menu) menu.style.display = 'none';
+}
+
+window.editQuickPinMenu = function(pinId) {
+window.closePinContextMenu();
+window.openQuickPinModal(pinId);
+}
+
+window.togglePinVisibilityMenu = function(pinId) {
+window.closePinContextMenu();
+const pin = quickPins.find(function(p) { return p.id === pinId; });
+if (!pin) return;
+pin.agentVisible = !pin.agentVisible;
+window.showToast("Updating visibility...", "info");
+google.script.run.withSuccessHandler(function(res) {
+if(res.success) {
+window.showToast("Visibility updated.", "success");
+loadQuickPins();
+} else {
+window.showToast(res.error, "error");
+}
+}).saveQuickPinData(JSON.stringify(pin));
+}
+
+window.deleteQuickPinMenu = function(pinId) {
+window.closePinContextMenu();
+window.deleteQuickPin(pinId);
+}
+
+function renderQuickPins() {
+const container = document.getElementById('quickPinsContainer');
+if (!container) return;
+container.innerHTML = '';
+quickPins.forEach(function(pin) {
+if (!pin) return;
+let htmlBlock = '<div class="quick-pin-slot filled" onclick="window.open(\'' + escapeForFunctionCall(pin.url) + '\', \'_blank\')"';
+if (!isAgent) {
+htmlBlock += ' oncontextmenu="window.handlePinContextMenu(event, \'' + escapeForFunctionCall(pin.id) + '\')"';
+}
+htmlBlock += '>';
+if (!isAgent && pin.agentVisible) {
+htmlBlock += '<div style="position: absolute; top: 12px; left: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);" title="Visible to Agents"></div>';
+}
+if (!isAgent && isDashboardEditMode) {
+htmlBlock += '<button class="pin-delete-btn" onclick="event.stopPropagation(); window.deleteQuickPin(\'' + escapeForFunctionCall(pin.id) + '\')" title="Remove Pin"><i class="material-icons">close</i></button>';
+}
+htmlBlock += '<i class="material-icons text-primary" style="font-size: 36px; margin-bottom: 8px;">language</i>';
+htmlBlock += '<div class="quick-pin-title">' + escapeHTML(pin.title) + '</div>';
+htmlBlock += '</div>';
+container.innerHTML += htmlBlock;
+});
+
+if (!isAgent && isDashboardEditMode) {
+container.innerHTML += '<div class="quick-pin-slot add-new" onclick="window.openQuickPinModal()">' +
+'<i class="material-icons" style="font-size: 36px; opacity: 0.5; margin-bottom: 8px;">add_circle_outline</i>' +
+'<div class="quick-pin-title text-muted fw-normal">Add Shortcut</div>' +
+'</div>';
+}
+}
+
+window.openQuickPinModal = function(id) {
+const targetId = id || '';
+document.getElementById('pinId').value = targetId;
+document.getElementById('pinTitle').value = '';
+document.getElementById('pinUrl').value = '';
+document.getElementById('pinAgentVisible').checked = false;
+
+if (targetId) {
+const pin = quickPins.find(function(p) { return p.id === targetId; });
+if (pin) {
+document.getElementById('pinTitle').value = pin.title;
+document.getElementById('pinUrl').value = pin.url;
+document.getElementById('pinAgentVisible').checked = pin.agentVisible;
+}
+}
+
+new bootstrap.Modal(document.getElementById('quickPinModal')).show();
+}
+
+window.saveQuickPin = function() {
+const id = document.getElementById('pinId').value;
+const title = document.getElementById('pinTitle').value.trim();
+let url = document.getElementById('pinUrl').value.trim();
+const agentVisible = document.getElementById('pinAgentVisible').checked;
+
+if (!title || !url) {
+return window.showToast("Please provide both a Title and a URL.", "error");
+}
+if (!url.startsWith('http://') && !url.startsWith('https://')) {
+url = 'https://' + url;
+}
+
+const payload = JSON.stringify({ id: id, title: title, url: url, agentVisible: agentVisible });
+const btn = document.querySelector('#quickPinModal .btn-primary');
+const oldText = btn.innerHTML;
+btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+btn.disabled = true;
+
+google.script.run.withSuccessHandler(function(res) {
+btn.innerHTML = oldText;
+btn.disabled = false;
+if(res.success) {
+const modalEl = document.getElementById('quickPinModal');
+const modalInstance = bootstrap.Modal.getInstance(modalEl);
+if (modalInstance) modalInstance.hide();
+window.showToast("Shortcut saved successfully!", "success");
+loadQuickPins();
+} else {
+window.showToast(res.error, "error");
+}
+}).saveQuickPinData(payload);
+}
+
+window.deleteQuickPin = function(id) {
+if(!confirm("Are you sure you want to permanently remove this shortcut?")) return;
+google.script.run.withSuccessHandler(function(res) {
+if(res.success) {
+window.showToast("Shortcut removed.", "success");
+loadQuickPins();
+} else {
+window.showToast(res.error, "error");
+}
+}).deleteQuickPinData(id);
+}
+
+function applyTheme() {
+document.documentElement.setAttribute('data-theme', currentTheme);
+const iconName = currentTheme === 'dark' ? 'light_mode' : 'dark_mode';
+if(document.getElementById('themeIconWe')) document.getElementById('themeIconWe').innerText = iconName;
+if(document.getElementById('themeIconWeAgent')) document.getElementById('themeIconWeAgent').innerText = iconName;
+const root = document.documentElement;
+if(currentTheme === 'dark') {
+root.style.setProperty('--close-filter', 'invert(1) grayscale(100%) brightness(200%)');
+} else {
+root.style.setProperty('--close-filter', 'none');
+}
+}
+
+window.toggleTheme = function() {
+currentTheme = currentTheme === 'light' ? 'dark' : 'light';
+localStorage.setItem('ops_theme_' + APP_TEAM, currentTheme);
+applyTheme();
+}
+
+window.toggleSidebar = function() {
+const sidebar = document.getElementById('appSidebar');
+if (sidebar) sidebar.classList.toggle('collapsed');
+}
+
+window.toggleSidebarGroup = function(groupId, wrapperEl) {
+var group = document.getElementById(groupId);
+if (group && group.classList) {
+group.classList.toggle('collapsed');
+if (wrapperEl && wrapperEl.classList) {
+wrapperEl.classList.toggle('collapsed');
+}
+}
+}
+
+window.switchView = function(viewName, menuItemElement) {
+if (menuItemElement) {
+document.querySelectorAll('.menu-item').forEach(function(m) { m.classList.remove('active'); });
+if (menuItemElement.classList) {
+menuItemElement.classList.add('active');
+} else if (typeof menuItemElement === 'string') {
+const el = document.getElementById(menuItemElement);
+if (el && el.classList) el.classList.add('active');
+}
+}
+document.querySelectorAll('.view-section').forEach(function(v) { v.classList.remove('active'); });
+const targetView = document.getElementById('view-' + viewName);
+if (targetView && targetView.classList) {
+targetView.classList.add('active');
+} else {
+console.warn("[Enterprise DOM Shield] Requested View was not found. Routing aborted.");
+}
+const brandContainer = document.getElementById('sidebarBrand');
+if (brandContainer) {
+if (viewName === 'forge' && !isAgent) {
+brandContainer.innerHTML = '<svg viewBox="0 0 24 24" width="28" height="28" fill="var(--primary)"><path d="M7 3.5l11 7.5-11 7.5v-4l6-3.5-6-3.5v-4z" /></svg><span id="brandTeamName" style="color: var(--primary); font-weight: 800; font-family: var(--font-display); letter-spacing: -0.5px;">InfoCard Creator</span>';
+} else {
+const teamName = isAgent ? 'AGENT Hub' : APP_TEAM + ' Hub';
+brandContainer.innerHTML = '<svg viewBox="0 0 24 24" width="28" height="28" fill="var(--primary)"><path d="M7 3.5l11 7.5-11 7.5v-4l6-3.5-6-3.5v-4z" /></svg><span id="brandTeamName" style="color: var(--text-main);">' + teamName + '</span>';
+}
+}
+const pulseWidget = document.getElementById('ai-widget-container');
+if (pulseWidget) {
+const isForgeViewActive = viewName === 'forge' && !isAgent && (APP_TEAM === 'QA');
+if (isForgeViewActive) {
+pulseWidget.style.display = 'none';
+} else {
+pulseWidget.style.display = 'block';
+}
+}
+if(viewName === 'suitcase' && typeof window.renderSidebar === 'function') window.renderSidebar();
+}
+
+window.showToast = function(message, type) {
+type = type || 'success';
+const container = document.getElementById('toastContainer');
+if(!container) return;
+const toast = document.createElement('div');
+toast.className = 'custom-toast ' + type;
+let iconStr = type === 'success' ? 'check_circle' : (type === 'error' ? 'error' : 'info');
+toast.innerHTML = '<i class="material-icons">' + iconStr + '</i><span class="text">' + escapeHTML(message) + '</span>';
+container.appendChild(toast);
+setTimeout(function() { toast.classList.add('show'); }, 10);
+setTimeout(function() {
+toast.classList.remove('show');
+setTimeout(function() { toast.remove(); }, 400);
+}, 3000);
+}
+
+window.loader = function(show) {
+const l = document.getElementById('loader');
+if(l) l.style.width = show ? '100%' : '0%';
+}
+
+window.closeModal = function(id) {
+const el = document.getElementById(id);
+if (el && document.activeElement && el.contains(document.activeElement)) {
+document.activeElement.blur();
+document.body.focus();
+}
+if(el) el.style.display = 'none';
+}
+
+function escapeHTML(str) {
+return str ? str.toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
+}
+
+function escapeForFunctionCall(str) {
+if (!str) return "";
+return str.toString().replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+}
+
+window.copyToClipboard = function(text) {
+navigator.clipboard.writeText(text).then(function() { window.showToast("Copied successfully!", "success"); });
+}
+
+window.copyModalContent = function() {
+navigator.clipboard.writeText(document.getElementById('inspectorContent').innerText).then(function() { window.showToast("Text copied successfully!", "success"); });
+}
+
+// --- 5. TEXT PARSING & HYDRA ENGINE ---
+window.formatCellContent = function(text) {
+if (!text) return '';
+let rawText = text.toString();
+
+if (rawText.length > 150) {
+let existingNewlines = (rawText.match(/\n/g) || []).length;
+if (existingNewlines < Math.floor(rawText.length / 200)) {
+let autoFormatted = "";
+let chunkStart = 0;
+let lastBreak = 0;
+const sentenceEndRegex = new RegExp('([.?!][\\\'"]?)\\s+((?:(?:\\[[\\/]?(?:red|green|img)\\]|\\*\\*|__|==)\\s*)*[A-Z0-9])', 'g');
+let match;
+while ((match = sentenceEndRegex.exec(rawText)) !== null) {
+let prevChar = match.index > 0 ? rawText[match.index - 1] : '';
+let prev3 = match.index > 2 ? rawText.substring(match.index - 3, match.index).toLowerCase() : '';
+if (prevChar >= 'A' && prevChar <= 'Z') continue;
+if (prev3 === 'e.g' || prev3 === 'i.e') continue;
+
+let segment = rawText.substring(lastBreak, match.index);
+if (segment.includes('\n')) {
+lastBreak = lastBreak + segment.lastIndexOf('\n');
+}
+let effectiveLength = match.index - lastBreak;
+if (effectiveLength > 120) {
+autoFormatted += rawText.substring(chunkStart, match.index + match[1].length) + "\n";
+chunkStart = match.index + match[0].length - match[2].length;
+lastBreak = chunkStart;
+}
+}
+autoFormatted += rawText.substring(chunkStart);
+rawText = autoFormatted;
+}
+}
+
+let escaped = escapeHTML(rawText);
+const driveImgRegex = new RegExp('\\[img\\](?:https?:\\/\\/)?drive\\.google\\.com\\/(?:file\\/d\\/|open\\?id=)([\\w-]+)[^\\s\\[]*\\[[\\/]img\\]', 'gi');
+escaped = escaped.replace(driveImgRegex, function(match, fileId) {
+const streamUrl = 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w1000';
+return '<br><img src="' + streamUrl + '" class="bot-image-preview" onclick="window.openLightbox(\'' + streamUrl + '\')" alt="Bot Generated Image"><br>';
+});
+
+const standardImgRegex = new RegExp('\\[img\\](https?:\\/\\/[^\\s\\[]+)\\[[\\/]img\\]', 'gi');
+escaped = escaped.replace(standardImgRegex, function(match, url) {
+if(url.includes('drive.google.com')) return match;
+return '<br><img src="' + url + '" class="bot-image-preview" onclick="window.openLightbox(\'' + url + '\')" alt="Bot Generated Image"><br>';
+});
+
+const urlRegex = /(https?:\/\/[^\s<]+)/g;
+escaped = escaped.replace(urlRegex, function(url) {
+if (url.includes('drive.google.com/thumbnail?id=')) return url;
+return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" style="color: #60a5fa; text-decoration: underline; font-weight: 700;" onclick="event.stopPropagation()">' + url + '</a>';
+});
+
+const bugRegex = new RegExp('\\b(?:b\\/|bug\\s*#?|issue\\s*#?)(\\d+)\\b', 'gi');
+escaped = escaped.replace(bugRegex, function(match, bugId) {
+return '<a href="https://issues.example.invalid/issues/' + bugId + '" target="_blank" rel="noopener noreferrer" class="badge bg-danger text-white px-2 py-1 mx-1 font-code" style="font-weight: 800; letter-spacing: 0.5px; text-decoration: none; box-shadow: 0 2px 4px rgba(225, 29, 72, 0.3);" onclick="event.stopPropagation()"><i class="material-icons" style="font-size: 11px; vertical-align: middle;">bug_report</i> ' + match.toUpperCase() + ' ↗</a>';
+});
+
+escaped = escaped.replace(/\*\*([\s\S]*?)\*\*/g, '<span class="md-bold">$1</span>');
+escaped = escaped.replace(/==([\s\S]*?)==/g, '<span class="md-highlight">$1</span>');
+escaped = escaped.replace(/__([\s\S]*?)__/g, '<span class="md-underline">$1</span>');
+const reRed = new RegExp('\\[red\\]([\\s\\S]*?)\\[[\\/]red\\]', 'gi');
+escaped = escaped.replace(reRed, '<span class="md-red">$1</span>');
+const reGreen = new RegExp('\\[green\\]([\\s\\S]*?)\\[[\\/]green\\]', 'gi');
+escaped = escaped.replace(reGreen, '<span class="md-green">$1</span>');
+
+var blocks = escaped.split(/\n+/);
+var parsedHtml = blocks.map(function(block) {
+if (block.trim() === '') return '';
+if (block.startsWith('<br><img')) return block;
+return '<div style="margin-bottom: 12px; line-height: 1.6;">' + block + '</div>';
+}).join('');
+return parsedHtml;
+}
+
+window.normalizeTextExtreme = function(text) {
+if (!text) return "unknown";
+return text.toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "").trim();
+}
+
+window.generateHash32 = function(str) {
+let hash = 0;
+if (str.length === 0) return hash.toString(36);
+for (let i = 0; i < str.length; i++) {
+const char = str.charCodeAt(i);
+hash = ((hash << 5) - hash) + char;
+hash = hash & hash;
+}
+return Math.abs(hash).toString(36);
+}
+
+window.applyMarkdown = function(prefix, suffix) {
+if (!lastFocusedTextarea) {
+window.showToast("Please click inside a text box first.", "info");
+return;
+}
+const el = lastFocusedTextarea;
+const start = el.selectionStart;
+const end = el.selectionEnd;
+const text = el.value;
+const selectedText = text.substring(start, end);
+const scrollPos = el.scrollTop;
+el.value = text.substring(0, start) + prefix + selectedText + suffix + text.substring(end);
+el.focus();
+if (selectedText.length === 0) {
+el.selectionStart = el.selectionEnd = start + prefix.length;
+} else {
+el.selectionStart = el.selectionEnd = start + prefix.length + selectedText.length + suffix.length;
+}
+el.scrollTop = scrollPos;
+}
+
+// --- 6. GLOBAL PASTE INTERCEPTOR (RICH TEXT & IMAGE LENS) ---
+document.addEventListener('paste', function(e) {
+const target = e.target;
+if (target && target.tagName === 'TEXTAREA') {
+const items = (e.clipboardData || window.clipboardData).items;
+let imageItem = null;
+
+for (let i = 0; i < items.length; i++) {
+if (items[i].type.indexOf('image/') === 0) {
+imageItem = items[i];
+break;
+}
+}
+
+if (imageItem) {
+e.preventDefault();
+const file = imageItem.getAsFile();
+if (!file) return;
+
+const originalValue = target.value;
+const start = target.selectionStart;
+const end = target.selectionEnd;
+
+target.value = originalValue.substring(0, start) + '\n[UPLOAD IN PROGRESS... PLEASE WAIT]\n' + originalValue.substring(end);
+target.disabled = true;
+if(typeof window.showToast === 'function') window.showToast("Uploading image...", "info");
+
+const reader = new FileReader();
+reader.onload = (event) => {
+const base64Data = event.target.result;
+const mimeType = file.type || 'image/png';
+const ext = mimeType.split('/')[1] || 'png';
+const filename = "FlowPilot_Lens_" + Date.now() + "." + ext;
+
+google.script.run.withSuccessHandler((res) => {
+target.disabled = false;
+if (res.success) {
+const imgMarkdown = '\n[img]' + res.url + '[/img]\n';
+target.value = originalValue.substring(0, start) + imgMarkdown + originalValue.substring(end);
+target.selectionStart = target.selectionEnd = start + imgMarkdown.length;
+target.dispatchEvent(new Event('input', { bubbles: true }));
+window.showToast("Screenshot captured and linked!", "success");
+} else {
+target.value = originalValue;
+window.showToast(res.error || "Upload failed.", "error");
+}
+}).withFailureHandler((err) => {
+target.disabled = false;
+target.value = originalValue;
+window.showToast(err.message, "error");
+}).uploadImageToDrive(base64Data, mimeType, filename);
+};
+reader.readAsDataURL(file);
+return;
+}
+
+const htmlData = e.clipboardData.getData('text/html');
+const plainText = e.clipboardData.getData('text/plain');
+if (htmlData && (htmlData.includes('<a') || htmlData.includes('href=') || htmlData.includes('<b') || htmlData.includes('strong') || htmlData.includes('font-weight'))) {
+e.preventDefault();
+
+const tempDiv = document.createElement('div');
+tempDiv.innerHTML = htmlData;
+let modified = false;
+
+const links = tempDiv.querySelectorAll('a');
+links.forEach(a => {
+let txt = a.textContent || '';
+let href = a.getAttribute('href') || '';
+if (href.startsWith('https://www.google.com/url?q=')) {
+try { href = new URL(href).searchParams.get('q') || href; } catch(err){}
+}
+if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
+const md = '[' + txt + '](' + href + ')';
+a.replaceWith(document.createTextNode(md));
+modified = true;
+}
+});
+
+const textNodes = tempDiv.querySelectorAll('b, strong, span');
+const bolds = Array.from(textNodes).reverse();
+
+bolds.forEach(el => {
+if (!el.parentNode) return;
+const fw = el.style.fontWeight;
+const tag = el.tagName.toLowerCase();
+let isBold = false;
+if ((tag === 'b' || tag === 'strong') && fw !== 'normal' && fw !== '400') {
+isBold = true;
+} else if (tag === 'span' && (fw === 'bold' || fw === '700' || fw === '800' || fw === '900' || parseInt(fw) >= 600)) {
+isBold = true;
+}
+
+if (isBold) {
+let txt = el.textContent;
+if (txt && txt.trim().length > 0) {
+const match = txt.match(/^(\s*)([\s\S]*?)(\s*)$/);
+const pre = match ? match[1] : '';
+const core = match ? match[2].replace(/\n/g, ' ') : txt.replace(/\n/g, ' ');
+const post = match ? match[3] : '';
+el.replaceWith(document.createTextNode(pre + '**' + core + '**' + post));
+modified = true;
+}
+}
+});
+
+if (modified) {
+const reBr = new RegExp('<br\\s*[\\/]*>', 'gi');
+const reTags = new RegExp('<[\\/](p|div|h[1-6])>', 'gi');
+tempDiv.innerHTML = tempDiv.innerHTML.replace(reBr, '\n');
+tempDiv.innerHTML = tempDiv.innerHTML.replace(reTags, '\n\n');
+let finalString = tempDiv.textContent || tempDiv.innerText || "";
+finalString = finalString.replace(/\n{3,}/g, '\n\n').trim();
+
+const start = target.selectionStart;
+const end = target.selectionEnd;
+const currentVal = target.value;
+target.value = currentVal.substring(0, start) + finalString + currentVal.substring(end);
+target.selectionStart = target.selectionEnd = start + finalString.length;
+target.dispatchEvent(new Event('input', { bubbles: true }));
+} else {
+const start = target.selectionStart;
+const end = target.selectionEnd;
+const currentVal = target.value;
+target.value = currentVal.substring(0, start) + plainText + currentVal.substring(end);
+target.selectionStart = target.selectionEnd = start + plainText.length;
+target.dispatchEvent(new Event('input', { bubbles: true }));
+}
+}
+}
+});
+</script>

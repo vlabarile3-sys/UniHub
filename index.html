@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FlowPilot - QA Workspace</title>
+    <title>UniHub - QA Workspace</title>
     
     <script>
         const APP_TEAM = "QA";
@@ -968,8 +968,7 @@
     <div class="app-container" id="mainAppContainer" style="z-index: 2; position: relative;">
         <div class="sidebar" id="appSidebar">
             <div class="brand" id="sidebarBrand">
-                <svg viewBox="0 0 24 24" width="28" height="28" fill="var(--primary)"><path d="M7 3.5l11 7.5-11 7.5v-4l6-3.5-6-3.5v-4z" /></svg>
-                <span id="brandTeamName" style="color: var(--text-main);">QA Hub</span>
+                <span id="brandTeamName" style="color: var(--text-main);">UniHub</span>
             </div>
             
             <div class="sidebar-section-wrapper" onclick="toggleSidebarGroup('group-operations', this)">
@@ -1039,8 +1038,7 @@
                     </div>
                 </div>
                 <div class="d-flex flex-column justify-content-center align-items-center flex-grow-1 text-center position-relative z-1" style="padding-bottom: 40px;">
-                    <svg viewBox="0 0 24 24" width="100" height="100" style="fill: var(--primary); margin-bottom: 30px;"><path d="M7 3.5l11 7.5-11 7.5v-4l6-3.5-6-3.5v-4z" /></svg>
-                    <h1 class="fw-bolder mb-3" style="font-size: 4rem; color: var(--primary); letter-spacing: -2px;" id="welcomeTitle">FlowPilot Core</h1>
+                    <h1 class="fw-bolder mb-3" style="font-size: 4rem; color: var(--primary); letter-spacing: -2px;" id="welcomeTitle">UniHub</h1>
                     <p class="text-muted fs-5 mb-4" style="max-width: 600px;">Centralized architecture for Schedule management, Cloud storage, and knowledge publishing.</p>
                     
                     <div class="quick-pins-grid mt-3" id="quickPinsContainer"></div>
@@ -2410,10 +2408,9 @@ console.warn("[Enterprise DOM Shield] Requested View was not found. Routing abor
 const brandContainer = document.getElementById('sidebarBrand');
 if (brandContainer) {
 if (viewName === 'forge' && !isAgent) {
-brandContainer.innerHTML = '<svg viewBox="0 0 24 24" width="28" height="28" fill="var(--primary)"><path d="M7 3.5l11 7.5-11 7.5v-4l6-3.5-6-3.5v-4z" /></svg><span id="brandTeamName" style="color: var(--primary); font-weight: 800; font-family: var(--font-display); letter-spacing: -0.5px;">InfoCard Creator</span>';
+brandContainer.innerHTML = '<span id="brandTeamName" style="color: var(--primary); font-weight: 800; font-family: var(--font-display); letter-spacing: -0.5px;">InfoCard Creator</span>';
 } else {
-const teamName = isAgent ? 'AGENT Hub' : APP_TEAM + ' Hub';
-brandContainer.innerHTML = '<svg viewBox="0 0 24 24" width="28" height="28" fill="var(--primary)"><path d="M7 3.5l11 7.5-11 7.5v-4l6-3.5-6-3.5v-4z" /></svg><span id="brandTeamName" style="color: var(--text-main);">' + teamName + '</span>';
+brandContainer.innerHTML = '<span id="brandTeamName" style="color: var(--text-main);">UniHub</span>';
 }
 }
 const pulseWidget = document.getElementById('ai-widget-container');

@@ -1,8 +1,8 @@
-# FlowPilot Portfolio Demo
+# UniHub Portfolio Demo
 
 **[Open the live demo](https://vlabarile3-sys.github.io/FlowPilot-Portfolio/)**
 
-FlowPilot is an interactive, browser-only portfolio demo of a workflow and knowledge-management application.
+UniHub is an interactive, browser-only portfolio demo of a workflow and knowledge-management application.
 
 ## What to explore
 

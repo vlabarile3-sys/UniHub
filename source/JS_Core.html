@@ -675,10 +675,9 @@ console.warn("[Enterprise DOM Shield] Requested View was not found. Routing abor
 const brandContainer = document.getElementById('sidebarBrand');
 if (brandContainer) {
 if (viewName === 'forge' && !isAgent) {
-brandContainer.innerHTML = '<svg viewBox="0 0 24 24" width="28" height="28" fill="var(--primary)"><path d="M7 3.5l11 7.5-11 7.5v-4l6-3.5-6-3.5v-4z" /></svg><span id="brandTeamName" style="color: var(--primary); font-weight: 800; font-family: var(--font-display); letter-spacing: -0.5px;">InfoCard Creator</span>';
+brandContainer.innerHTML = '<span id="brandTeamName" style="color: var(--primary); font-weight: 800; font-family: var(--font-display); letter-spacing: -0.5px;">InfoCard Creator</span>';
 } else {
-const teamName = isAgent ? 'AGENT Hub' : APP_TEAM + ' Hub';
-brandContainer.innerHTML = '<svg viewBox="0 0 24 24" width="28" height="28" fill="var(--primary)"><path d="M7 3.5l11 7.5-11 7.5v-4l6-3.5-6-3.5v-4z" /></svg><span id="brandTeamName" style="color: var(--text-main);">' + teamName + '</span>';
+brandContainer.innerHTML = '<span id="brandTeamName" style="color: var(--text-main);">UniHub</span>';
 }
 }
 const pulseWidget = document.getElementById('ai-widget-container');

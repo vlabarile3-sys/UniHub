@@ -99,7 +99,7 @@
     author: 'Demo Studio',
     target: 'ALL',
     scheduled: new Date(now - 60 * 60 * 1000).toISOString(),
-    payload: 'Welcome to the fictional FlowPilot demo. Explore the sample workflows and shared guides.',
+    payload: 'Welcome to the fictional UniHub demo. Explore the sample workflows and shared guides.',
     priority: 'NORMAL'
   }, {
     id: 'demo-broadcast-2',

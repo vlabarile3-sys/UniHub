@@ -9,8 +9,9 @@ const modules = new Map();
 function include(name) {
   const file = join(sourceDir, `${name}.html`);
   const content = readFileSync(file, 'utf8');
-  modules.set(name, content);
-  return content;
+  const rendered = name === 'CSS' ? content.replace(/\u00a0/g, ' ') : content;
+  modules.set(name, rendered);
+  return rendered;
 }
 
 function evaluateCondition(expression) {

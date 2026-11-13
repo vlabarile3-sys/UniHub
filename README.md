@@ -1,4 +1,17 @@
 # UniHub Portfolio Demo
+## About the project
+
+UniHub is a centralized workspace for organizing team schedules, shared resources, and operational knowledge. It brings scheduling, knowledge publishing, and workflow configuration together in one interface, helping teams find information and coordinate their work.
+
+### Key capabilities
+
+- Explore the master schedule and task-assignment interface.
+- Browse shared guides, checklists, shortcuts, and other resources.
+- Create and review InfoCards for sharing knowledge across workflows.
+- Explore workflow configuration and operational tools using sample content.
+
+The GitHub Pages version is a browser-only portfolio demo with fictional data. Its changes stay in memory and reset on refresh; it does not connect to Google services. The included Apps Script source contains separate backend automations and should be reviewed before deployment.
+
 
 **[Open the live demo](https://vlabarile3-sys.github.io/UniHub/)**
 
